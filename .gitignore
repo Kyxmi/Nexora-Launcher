@@ -1,0 +1,21 @@
+# Dépendances
+node_modules/
+
+# Builds générés par electron-builder (l'installateur va dans les Releases GitHub)
+launcher/dist/
+dist/
+
+# Variables d'environnement locales (NEXORA_SUPABASE_URL, NEXORA_SUPABASE_KEY…)
+.env
+.env.*
+
+# Logs et fichiers système
+npm-debug.log*
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Éditeurs
+.vscode/
+.idea/

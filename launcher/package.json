@@ -1,0 +1,48 @@
+{
+  "name": "nexora-launcher",
+  "productName": "Nexora-Launcher",
+  "version": "1.0.0",
+  "description": "Launcher des applis Nexora (comptes et fichiers sur Supabase)",
+  "author": "Nexora",
+  "license": "MIT",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "fr.nexora.launcher",
+    "productName": "Nexora-Launcher",
+    "artifactName": "Nexora-Launcher-Setup-${version}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "config.js",
+      "main.js",
+      "preload.js",
+      "lib/**/*",
+      "renderer/**/*",
+      "build/icon.png"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "Nexora-Launcher"
+    }
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.2"
+  }
+}

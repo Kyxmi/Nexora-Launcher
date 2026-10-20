@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: http: https:; font-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Nexora-Launcher</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-view="boot">
+  <div class="ambient" aria-hidden="true"></div>
+
+  <header class="titlebar">
+    <span class="brand">
+      <img class="brand__mark" src="brand.png" alt="">
+      <span class="brand__name">Nexora-Launcher</span>
+    </span>
+  </header>
+
+  <div id="view-boot" class="view boot" aria-busy="true">
+    <img class="boot__mark" src="brand.png" alt="Chargement">
+  </div>
+
+  <main id="view-auth" class="view auth" hidden>
+    <section class="auth__stage">
+      <div class="sky" aria-hidden="true"></div>
+      <div class="auth__brand">
+        <img class="auth__logo" src="brand.png" alt="">
+        <h1 class="auth__title">Nexora</h1>
+        <p class="auth__lead">La boutique et le launcher des applis Nexora-Team. Ajoute, installe et lance tout depuis un seul endroit.</p>
+      </div>
+    </section>
+
+    <section class="auth__panel glass">
+      <div class="auth__box">
+        <div class="tabs" role="tablist" aria-label="Accès au compte">
+          <button id="tab-login" class="tab" role="tab" type="button" aria-selected="true" aria-controls="login-form">Connexion</button>
+          <button id="tab-register" class="tab" role="tab" type="button" aria-selected="false" aria-controls="register-form">Créer un compte</button>
+        </div>
+
+        <form id="login-form" class="auth__form" novalidate>
+          <div class="field">
+            <label for="login-email">Adresse e-mail</label>
+            <input id="login-email" class="input" type="email" autocomplete="email" spellcheck="false" required>
+          </div>
+          <div class="field">
+            <label for="login-password">Mot de passe</label>
+            <input id="login-password" class="input" type="password" autocomplete="current-password" required>
+          </div>
+          <button id="login-submit" class="btn btn--primary btn--block" type="submit">Se connecter</button>
+        </form>
+
+        <form id="register-form" class="auth__form" novalidate hidden>
+          <div class="field">
+            <label for="register-username">Pseudo</label>
+            <input id="register-username" class="input" autocomplete="nickname" maxlength="24" spellcheck="false" required>
+          </div>
+          <div class="field">
+            <label for="register-email">Adresse e-mail</label>
+            <input id="register-email" class="input" type="email" autocomplete="email" spellcheck="false" required>
+          </div>
+          <div class="field">
+            <label for="register-password">Mot de passe</label>
+            <input id="register-password" class="input" type="password" autocomplete="new-password" minlength="8" required aria-describedby="register-password-hint">
+            <span id="register-password-hint" class="field__hint">8 caractères minimum</span>
+          </div>
+          <button id="register-submit" class="btn btn--primary btn--block" type="submit">Créer mon compte</button>
+        </form>
+
+        <p id="auth-error" class="form-error" role="alert" hidden></p>
+      </div>
+
+      <div class="server-line">
+        <div class="server-line__status">
+          <span id="server-dot" class="dot" data-state="pending"></span>
+          <span id="server-state">Vérification du serveur…</span>
+        </div>
+        <div class="server-line__url"><span id="server-url"></span></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="view-shell" class="view shell" hidden>
+    <aside class="sidebar glass">
+      <nav class="nav" aria-label="Navigation principale">
+        <button id="nav-shop" class="nav-btn" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 8h13l-1.2 11.2a1 1 0 0 1-1 .8H7.7a1 1 0 0 1-1-.8z"/><path d="M9 8V6.8a3 3 0 0 1 6 0V8"/></svg>
+          Boutique
+        </button>
+        <button id="nav-library" class="nav-btn" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="2"/><rect x="13" y="4" width="7" height="7" rx="2"/><rect x="4" y="13" width="7" height="7" rx="2"/><rect x="13" y="13" width="7" height="7" rx="2"/></svg>
+          Bibliothèque
+          <span id="library-count" class="nav-count"></span>
+        </button>
+      </nav>
+
+      <div class="sidebar__head">
+        <h2 class="sidebar__title">Tes applis</h2>
+        <button id="refresh" class="icon-btn" type="button" title="Actualiser" aria-label="Actualiser">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
+        </button>
+      </div>
+      <label class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+        <input id="search" type="search" placeholder="Rechercher" aria-label="Rechercher dans ta bibliothèque" spellcheck="false">
+      </label>
+      <nav id="app-list" class="app-list" aria-label="Ta bibliothèque"></nav>
+
+      <div id="banner" class="banner" role="status" hidden></div>
+      <div class="sidebar__foot">
+        <button id="nav-publish" class="nav-btn" type="button" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/></svg>
+          Publier une appli
+        </button>
+        <button id="nav-settings" class="nav-btn" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9"/><path d="M19 7h1"/><circle cx="16" cy="7" r="2.5"/><path d="M4 17h2"/><path d="M12 17h8"/><circle cx="9" cy="17" r="2.5"/></svg>
+          Paramètres
+        </button>
+        <div class="account">
+          <span id="account-avatar" class="avatar" aria-hidden="true"></span>
+          <span class="account__text">
+            <span id="account-name" class="account__name"></span>
+            <span id="account-role" class="account__role"></span>
+          </span>
+          <button id="logout" class="icon-btn" type="button" title="Se déconnecter" aria-label="Se déconnecter">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4"/><path d="m9 16-4-4 4-4"/><path d="M5 12h10"/></svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <div id="main" class="main"></div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <dialog id="confirm" class="dialog" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+    <h2 id="confirm-title" class="dialog__title"></h2>
+    <p id="confirm-body" class="dialog__body"></p>
+    <div class="dialog__actions">
+      <button id="confirm-cancel" class="btn btn--tall" type="button">Annuler</button>
+      <button id="confirm-ok" class="btn btn--tall" type="button">Confirmer</button>
+    </div>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
