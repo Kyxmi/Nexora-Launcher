@@ -291,7 +291,10 @@ async function mergeApps(remoteApps, ownedIds) {
       iconUrl: remote.iconUrl,
       remote: true,
       owned: owned.has(remote.id) || Boolean(local),
-      updateAvailable: Boolean(local) && local.sha256 !== remote.sha256,
+      // Une appli installée comme « autonome » alors qu'elle est devenue « installateur » doit être réinstallée :
+      // sinon Lancer rouvrirait l'installateur au lieu de l'appli.
+      updateAvailable: Boolean(local) && (local.sha256 !== remote.sha256
+        || (remote.packageType === 'installer' && (local.packageType || 'app') !== 'installer')),
       ...localState(remote.id, local),
     });
   }
