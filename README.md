@@ -3,7 +3,7 @@
 ![Plateforme](https://img.shields.io/badge/plateforme-Windows-0078D6) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![Licence](https://img.shields.io/badge/licence-MIT-green)
 
 Le launcher des applis Nexora : chacun crée un compte, ajoute tes applis depuis la **Boutique** à sa **Bibliothèque**, puis les installe et les lance en un clic.
-Seuls les membres de l'équipe **Nexora-Team** peuvent publier, mettre à jour ou retirer une appli, et toutes les applis sont publiées sous le nom **Nexora-Team**. Au départ, l'équipe contient louisdelahodde@gmail.com.
+Seuls les membres de l'équipe **Nexora-Team** peuvent publier, mettre à jour ou retirer une appli, et toutes les applis sont publiées sous le nom **Nexora-Team**.*
 
 Tout est hébergé sur **Supabase** : les comptes, la liste des applis et les fichiers .exe. Tu n'as plus de serveur à faire tourner.
 
