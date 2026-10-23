@@ -1,7 +1,7 @@
 {
   "name": "nexora-launcher",
   "productName": "Nexora-Launcher",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Launcher des applis Nexora (comptes et fichiers sur Supabase)",
   "author": "Nexora",
   "license": "MIT",
@@ -29,6 +29,12 @@
       "repo": "Nexora-Launcher",
       "releaseType": "release"
     },
+    "extraResources": [
+      {
+        "from": "build/lock-stub.exe",
+        "to": "lock-stub.exe"
+      }
+    ],
     "files": [
       "config.js",
       "main.js",

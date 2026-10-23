@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('nexora', {
   getConfig: () => call('config:get'),
   checkServer: () => call('server:health'),
   setAutoUpdateApps: (value) => call('settings:autoUpdateApps', value),
+  setLockApps: (value) => call('settings:lockApps', value),
 
   restoreSession: () => call('auth:restore'),
   login: (email, password) => call('auth:login', { email, password }),

@@ -1,13 +1,33 @@
 # Réserver une appli au Nexora-Launcher
 
+## Ce que fait le launcher tout seul (rien à changer dans les applis)
+
+Par défaut, le launcher réserve chaque appli installée : il renomme son vrai `.exe` en `.nxe` et met à la place un petit
+programme (`launcher/build/lock-stub.exe`, source dans `launcher/build/lock-stub/`) qui affiche seulement :
+
+> Il faut aller dans le Nexora Launcher, puis cliquer sur « Lancer » pour pouvoir lancer cette appli.
+
+Le bouton **Lancer** du launcher démarre directement le vrai fichier. Concrètement :
+
+- un double-clic sur le `.exe` de l'appli (ou sur un raccourci du bureau) affiche le message ;
+- après une installation ou une mise à jour de l'appli, le launcher la réserve de nouveau (au démarrage, après l'installation, et à chaque clic sur **Lancer**) ;
+- avant une désinstallation, le launcher remet le vrai `.exe`, pour que le désinstallateur de l'appli fonctionne ;
+- l'interrupteur **Réserver mes applis au launcher** de **Paramètres** désactive le tout et remet les vrais `.exe`.
+
+Limites : ce n'est pas une protection absolue (renommer le `.nxe` en `.exe` suffit à lancer l'appli), et un antivirus
+trop zélé peut se méfier d'un petit programme inconnu placé dans le dossier d'une appli. Si le verrouillage échoue
+(fichier occupé, accès refusé), l'appli reste lançable normalement.
+
+## Variante : le contrôle dans l'appli elle-même (facultatif)
+
 Quand le launcher lance une appli, il ajoute la variable d'environnement `NEXORA_LAUNCHER=1`
 (et `NEXORA_LAUNCHER_VERSION`, la version du launcher). C'est à l'appli de vérifier ce signal
 au démarrage : s'il manque, elle affiche ce message et se ferme.
 
 > Il faut aller dans le Nexora Launcher, puis cliquer sur « Lancer » pour pouvoir lancer cette appli.
 
-Le launcher ne peut pas l'imposer de l'extérieur : le contrôle se fait **dans le code de chaque appli**,
-une seule fois. C'est une barrière de confort (double-clic sur le .exe, raccourci du bureau),
+Le verrou du launcher (ci-dessus) suffit en général. Cette variante, à faire **dans le code de chaque appli**, ajoute
+une seconde barrière qui reste en place même si quelqu'un renomme le `.nxe`. Comme l'autre, c'est une barrière de confort,
 pas une protection contre quelqu'un qui définirait lui-même la variable.
 
 Le contrôle doit être **désactivé en développement** (`npm run tauri dev`, `cargo run`…), sinon tu ne pourrais

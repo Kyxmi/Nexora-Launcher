@@ -1641,6 +1641,28 @@ async function installUpdate() {
 
 /* ---------- Paramètres ---------- */
 
+function lockAppsRow() {
+  const input = h('input', { type: 'checkbox', class: 'switch__input', role: 'switch', 'aria-label': 'Réserver mes applis au launcher' });
+  input.checked = Boolean(state.config.lockApps);
+  input.addEventListener('change', async () => {
+    input.disabled = true;
+    try {
+      state.config.lockApps = await nx.setLockApps(input.checked);
+      toast(input.checked ? 'Tes applis ne s’ouvrent plus que depuis le launcher' : 'Tes applis peuvent de nouveau s’ouvrir sans le launcher');
+    } catch (err) {
+      input.checked = !input.checked;
+      toast(err.message, 'error');
+    } finally {
+      input.disabled = false;
+    }
+  });
+  return h('label', { class: 'settings__row settings__row--toggle' },
+    h('span', { class: 'settings__text' },
+      h('span', { class: 'settings__label' }, 'Réserver mes applis au launcher'),
+      h('span', { class: 'settings__hint' }, 'Un double-clic sur le .exe d’une appli affiche « Il faut aller dans le Nexora Launcher, puis cliquer sur Lancer ». Seul le bouton Lancer l’ouvre.')),
+    h('span', { class: 'switch' }, input, h('span', { class: 'switch__track', 'aria-hidden': 'true' })));
+}
+
 function autoUpdateRow() {
   const input = h('input', { type: 'checkbox', class: 'switch__input', role: 'switch', 'aria-label': 'Mettre à jour mes applis automatiquement' });
   input.checked = Boolean(state.config.autoUpdateApps);
@@ -1672,7 +1694,8 @@ function settingsPage() {
             h('span', { class: 'account-card__name' }, `Nexora-Launcher ${state.config.version}`),
             h('span', { class: `update-line${state.update.state === 'error' ? ' is-error' : ''}`, id: 'update-line' }, updateText(state.update))),
           h('span', { class: 'update-actions', id: 'update-actions' }, updateButtons())),
-        autoUpdateRow()),
+        autoUpdateRow(),
+        lockAppsRow()),
       h('section', { class: 'settings__group glass' },
         h('h2', { class: 'section-title' }, 'Serveur'),
         h('p', { class: 'muted' }, 'Les comptes, la boutique et les fichiers sont hébergés sur Supabase.'),

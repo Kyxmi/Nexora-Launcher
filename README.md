@@ -88,7 +88,7 @@ Les launchers déjà installés se mettent à jour tout seuls : ils cherchent un
 
 ## Réserver une appli au launcher
 
-Quand le launcher lance une appli, il définit la variable `NEXORA_LAUNCHER=1`. Une appli peut refuser de s'ouvrir sans elle (double-clic sur son .exe, raccourci) et afficher « Il faut aller dans le Nexora Launcher, puis cliquer sur « Lancer » ». Le code à ajouter dans l'appli (Tauri, Electron, Python, .NET) est dans [docs/reserver-une-appli-au-launcher.md](docs/reserver-une-appli-au-launcher.md).
+Par défaut, les applis installées ne s'ouvrent que depuis le bouton **Lancer** : un double-clic sur leur `.exe` affiche « Il faut aller dans le Nexora Launcher, puis cliquer sur « Lancer » ». Le launcher met en place ce verrou tout seul, sans rien changer dans les applis (interrupteur dans **Paramètres**). Détails et limites dans [docs/reserver-une-appli-au-launcher.md](docs/reserver-une-appli-au-launcher.md).
 
 ## Ajouter ton pote à Nexora-Team
 

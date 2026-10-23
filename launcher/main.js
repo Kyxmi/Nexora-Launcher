@@ -21,6 +21,7 @@ const windows = require('./lib/windows');
 const { createCloud } = require('./lib/cloud');
 const { autoUpdater } = require('electron-updater');
 const github = require('./lib/github');
+const lock = require('./lib/lock');
 
 const APP_ID_RE = /^[a-z0-9-]{1,64}$/;
 const EXE_NAME_RE = /^[\w.\- ()]{1,100}\.exe$/i;
@@ -73,8 +74,9 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 function init() {
-  store = new Store(app.getPath('userData'), { lastUser: null, ownedIds: [], autoUpdateApps: true });
+  store = new Store(app.getPath('userData'), { lastUser: null, ownedIds: [], autoUpdateApps: true, lockApps: true });
   appsDir = path.join(app.getPath('userData'), 'apps');
+  lock.init(app.isPackaged ? path.join(process.resourcesPath, 'lock-stub.exe') : path.join(__dirname, 'build', 'lock-stub.exe'));
   configError = checkConfig();
   if (!configError) {
     cloud = createCloud({
@@ -92,6 +94,7 @@ function init() {
   createWindow();
   setInterval(sendHeartbeat, HEARTBEAT_MS);
   setupUpdater();
+  syncLocks();
   setInterval(checkAppUpdates, APP_UPDATE_CHECK_MS);
   setTimeout(checkAppUpdates, 15000); // peu après le démarrage, une fois la session rétablie
 }
@@ -452,6 +455,36 @@ async function checkAppUpdates() {
   }
 }
 
+/* ---------- Applis réservées au launcher ---------- */
+
+// Le .exe de l'appli installée : celui de l'installateur (retrouvé dans Windows), ou celui téléchargé par le launcher.
+function exeOf(appId, local) {
+  if (!local) return null;
+  if (local.packageType === 'installer') return local.launchPath || null;
+  return path.join(appDir(appId), path.basename(local.fileName));
+}
+
+// Applique le réglage à une appli : verrouillée (un double-clic sur son .exe affiche un message) ou libre.
+// Renvoie le fichier à lancer. En cas d'échec (fichier occupé…), l'appli reste lançable telle quelle.
+async function applyLock(appId) {
+  const exePath = exeOf(appId, store.installed[appId]);
+  if (!exePath || !windows.isWindows) return exePath;
+  try {
+    if (store.config.lockApps) return (await lock.lock(exePath)) || exePath;
+    await lock.unlock(exePath);
+  } catch (err) {
+    console.warn(`[verrou] ${path.basename(exePath)} :`, err.code || err.message);
+  }
+  return exePath;
+}
+
+async function syncLocks() {
+  for (const appId of Object.keys(store.installed)) {
+    if (running.has(appId) || busy.has(appId) || downloads.has(appId)) continue;
+    await applyLock(appId);
+  }
+}
+
 /* ---------- Installer, lancer, désinstaller ---------- */
 
 async function installApp(appId, { auto = false } = {}) {
@@ -513,9 +546,12 @@ async function installApp(appId, { auto = false } = {}) {
 
     if (!isInstaller) {
       if (previous && previous.fileName !== fileName) {
-        await fsp.rm(path.join(dir, path.basename(previous.fileName)), { force: true }).catch(() => {});
+        const oldExe = path.join(dir, path.basename(previous.fileName));
+        await fsp.rm(oldExe, { force: true }).catch(() => {});
+        await fsp.rm(lock.realPathOf(oldExe), { force: true }).catch(() => {}); // et son vrai programme rangé à côté
       }
       store.setInstalled(appId, record);
+      await applyLock(appId);
       return { needsLocate: false };
     }
 
@@ -546,6 +582,7 @@ async function installApp(appId, { auto = false } = {}) {
       uninstallCommand: program?.uninstall || previous?.uninstallCommand || '',
       launchPath: launchPath || null,
     });
+    await applyLock(appId);
     return { needsLocate: !launchPath };
   } catch (err) {
     await onAuthFailure(err);
@@ -565,6 +602,8 @@ async function uninstallApp(appId) {
 
   busy.add(appId);
   try {
+    // Le désinstallateur de l'appli cherche son vrai .exe : on le remet en place d'abord.
+    if (windows.isWindows) await lock.unlock(exeOf(appId, local)).catch(() => {});
     // Appli installée par un installateur : on passe par son propre désinstallateur.
     if (local.packageType === 'installer' && local.uninstallCommand && windows.isWindows) {
       const command = windows.parseCommand(local.uninstallCommand);
@@ -585,6 +624,9 @@ async function uninstallApp(appId) {
     await fsp.rm(appDir(appId), { recursive: true, force: true });
     store.removeInstalled(appId);
     return true;
+  } catch (err) {
+    if (store.installed[appId]) await applyLock(appId); // désinstallation annulée : l'appli redevient réservée au launcher
+    throw err;
   } finally {
     busy.delete(appId);
   }
@@ -613,6 +655,11 @@ async function launchApp(appId) {
     }
   }
 
+  exePath = await applyLock(appId); // le vrai fichier de l'appli, derrière le petit programme-message
+  if (!exePath || !fs.existsSync(exePath)) {
+    store.removeInstalled(appId);
+    throw new api.ApiError('Le fichier de l’appli a disparu. Réinstalle-la.');
+  }
   // NEXORA_LAUNCHER=1 : les applis réservées au launcher refusent de s'ouvrir sans ce signal (voir README).
   const env = { ...process.env, NEXORA_LAUNCHER: '1', NEXORA_LAUNCHER_VERSION: app.getVersion() };
   const child = spawn(exePath, [], { cwd: path.dirname(exePath), detached: true, stdio: 'ignore', env });
@@ -782,7 +829,13 @@ function registerIpc() {
     version: app.getVersion(),
     maxUploadMb: MAX_UPLOAD_MB,
     autoUpdateApps: Boolean(store.config.autoUpdateApps),
+    lockApps: Boolean(store.config.lockApps),
   }));
+  handle('settings:lockApps', async (value) => {
+    store.setConfig({ lockApps: value === true });
+    await syncLocks();
+    return value === true;
+  });
   handle('settings:autoUpdateApps', (value) => {
     store.setConfig({ autoUpdateApps: value === true });
     if (value === true) checkAppUpdates();
