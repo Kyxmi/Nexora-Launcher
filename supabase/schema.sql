@@ -239,5 +239,299 @@ create policy "Nexora : suppression par l'équipe"
   using (bucket_id in ('apps', 'icons') and (select public.is_admin()));
 
 
+-- 6. Les amis et qui est en ligne ------------------------------------------------------
+--  Chaque compte a un profil (son pseudo). On peut chercher un joueur par son pseudo et lui
+--  envoyer une demande d'ami. On ne voit qui est en ligne (et à quoi il joue) que chez ses amis.
+--  Les tables ne sont pas lisibles directement : tout passe par les fonctions ci-dessous,
+--  qui ne renvoient que ce que le compte connecté a le droit de voir.
+
+create table if not exists public.profiles (
+  id           uuid primary key references auth.users (id) on delete cascade,
+  username     text not null check (char_length(btrim(username)) between 1 and 40),
+  created_at   timestamptz not null default now(),
+  last_seen    timestamptz,
+  online_until timestamptz,
+  playing      text check (playing is null or char_length(playing) <= 60)
+);
+alter table public.profiles enable row level security;
+revoke all on table public.profiles from anon, authenticated;
+
+-- Le pseudo choisi à l'inscription, sinon le début de l'adresse e-mail (comme dans le launcher).
+create or replace function public.username_of(meta jsonb, email text)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  select left(coalesce(
+    nullif(btrim(meta ->> 'username'), ''),
+    nullif(split_part(coalesce(email, ''), '@', 1), ''),
+    'Joueur'
+  ), 40);
+$$;
+
+create or replace function public.create_profile()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  insert into public.profiles (id, username)
+  values (new.id, public.username_of(new.raw_user_meta_data, new.email))
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists create_profile on auth.users;
+create trigger create_profile
+  after insert on auth.users
+  for each row execute function public.create_profile();
+
+-- Les comptes créés avant cette version reçoivent aussi leur profil.
+insert into public.profiles (id, username)
+select id, public.username_of(raw_user_meta_data, email) from auth.users
+on conflict (id) do nothing;
+
+create table if not exists public.friendships (
+  requester    uuid not null references public.profiles (id) on delete cascade,
+  addressee    uuid not null references public.profiles (id) on delete cascade,
+  status       text not null default 'pending' check (status in ('pending', 'accepted')),
+  created_at   timestamptz not null default now(),
+  responded_at timestamptz,
+  primary key (requester, addressee),
+  check (requester <> addressee)
+);
+-- Une seule relation par paire de joueurs, quel que soit celui qui a demandé.
+create unique index if not exists friendships_pair_unique
+  on public.friendships (least(requester, addressee), greatest(requester, addressee));
+create index if not exists friendships_addressee on public.friendships (addressee);
+alter table public.friendships enable row level security;
+revoke all on table public.friendships from anon, authenticated;
+
+-- Le launcher signale toutes les minutes qu'il est ouvert, et ce que le joueur a lancé.
+create or replace function public.heartbeat(p_playing text default null)
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  update public.profiles
+     set last_seen = now(),
+         online_until = now() + interval '2 minutes',
+         playing = nullif(left(btrim(coalesce(p_playing, '')), 60), '')
+   where id = auth.uid();
+$$;
+
+-- Fermeture du launcher ou déconnexion : on passe hors ligne tout de suite.
+create or replace function public.go_offline()
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  update public.profiles set online_until = now(), playing = null where id = auth.uid();
+$$;
+
+-- Ses amis, avec leur statut. C'est le seul endroit où l'on voit qui est en ligne.
+create or replace function public.my_friends()
+returns table (id uuid, username text, online boolean, playing text, last_seen timestamptz, since timestamptz)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select p.id,
+         p.username,
+         coalesce(p.online_until > now(), false),
+         case when p.online_until > now() then p.playing end,
+         p.last_seen,
+         f.responded_at
+    from public.friendships f
+    join public.profiles p on p.id = case when f.requester = auth.uid() then f.addressee else f.requester end
+   where f.status = 'accepted'
+     and auth.uid() in (f.requester, f.addressee)
+   order by coalesce(p.online_until > now(), false) desc, lower(p.username);
+$$;
+
+-- Les demandes en attente : reçues (« incoming ») et envoyées (« outgoing »).
+create or replace function public.friend_requests()
+returns table (id uuid, username text, direction text, created_at timestamptz)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select p.id,
+         p.username,
+         case when f.addressee = auth.uid() then 'incoming' else 'outgoing' end,
+         f.created_at
+    from public.friendships f
+    join public.profiles p on p.id = case when f.requester = auth.uid() then f.addressee else f.requester end
+   where f.status = 'pending'
+     and auth.uid() in (f.requester, f.addressee)
+   order by f.created_at desc;
+$$;
+
+-- Lien entre le compte connecté et un autre joueur : none, friend, incoming ou outgoing.
+create or replace function public.relation_with(other uuid)
+returns text
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select coalesce((
+    select case
+             when f.status = 'accepted' then 'friend'
+             when f.addressee = auth.uid() then 'incoming'
+             else 'outgoing'
+           end
+      from public.friendships f
+     where (f.requester = auth.uid() and f.addressee = other)
+        or (f.requester = other and f.addressee = auth.uid())
+     limit 1
+  ), 'none');
+$$;
+
+-- Recherche par pseudo : seulement le pseudo, jamais le statut en ligne ni l'adresse e-mail.
+create or replace function public.search_players(q text)
+returns table (id uuid, username text, relation text)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select p.id, p.username, public.relation_with(p.id)
+    from public.profiles p
+   where auth.uid() is not null
+     and char_length(btrim(coalesce(q, ''))) >= 2
+     and p.id <> auth.uid()
+     and position(lower(btrim(q)) in lower(p.username)) > 0
+   order by position(lower(btrim(q)) in lower(p.username)), char_length(p.username), lower(p.username)
+   limit 20;
+$$;
+
+-- Suggestions : d'abord les amis de tes amis, puis les derniers inscrits.
+create or replace function public.friend_suggestions()
+returns table (id uuid, username text, mutual integer)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  with mine as (
+    select case when requester = auth.uid() then addressee else requester end as id
+      from public.friendships
+     where auth.uid() in (requester, addressee)
+  ),
+  my_friends as (
+    select case when requester = auth.uid() then addressee else requester end as id
+      from public.friendships
+     where status = 'accepted' and auth.uid() in (requester, addressee)
+  ),
+  friends_of_friends as (
+    select case when f.requester = mf.id then f.addressee else f.requester end as id, count(*)::int as mutual
+      from my_friends mf
+      join public.friendships f on f.status = 'accepted' and mf.id in (f.requester, f.addressee)
+     group by 1
+  )
+  select p.id, p.username, coalesce(fof.mutual, 0)
+    from public.profiles p
+    left join friends_of_friends fof on fof.id = p.id
+   where auth.uid() is not null
+     and p.id <> auth.uid()
+     and p.id not in (select id from mine)
+   order by coalesce(fof.mutual, 0) desc, p.created_at desc
+   limit 8;
+$$;
+
+-- Envoyer une demande. Si l'autre joueur nous en avait déjà envoyé une, on devient amis.
+create or replace function public.send_friend_request(target uuid)
+returns text
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  me uuid := auth.uid();
+  current_relation text;
+begin
+  if me is null then raise exception 'Connecte-toi pour ajouter des amis.'; end if;
+  if target is null or target = me then raise exception 'Tu ne peux pas t’ajouter toi-même.'; end if;
+  if not exists (select 1 from public.profiles where id = target) then raise exception 'Ce joueur n’existe plus.'; end if;
+
+  current_relation := public.relation_with(target);
+  if current_relation = 'friend' then return 'friend'; end if;
+  if current_relation = 'outgoing' then return 'outgoing'; end if;
+  if current_relation = 'incoming' then
+    update public.friendships set status = 'accepted', responded_at = now()
+     where requester = target and addressee = me and status = 'pending';
+    return 'friend';
+  end if;
+
+  if (select count(*) from public.friendships where requester = me and status = 'pending') >= 50 then
+    raise exception 'Tu as déjà 50 demandes en attente. Attends qu’elles soient acceptées.';
+  end if;
+  insert into public.friendships (requester, addressee) values (me, target);
+  return 'outgoing';
+end;
+$$;
+
+-- Accepter ou refuser une demande reçue.
+create or replace function public.respond_friend_request(other uuid, accept boolean)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if accept then
+    update public.friendships set status = 'accepted', responded_at = now()
+     where requester = other and addressee = auth.uid() and status = 'pending';
+  else
+    delete from public.friendships
+     where requester = other and addressee = auth.uid() and status = 'pending';
+  end if;
+  if not found then raise exception 'Cette demande n’existe plus.'; end if;
+end;
+$$;
+
+-- Retirer un ami, ou annuler une demande envoyée.
+create or replace function public.remove_friend(other uuid)
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  delete from public.friendships
+   where (requester = auth.uid() and addressee = other)
+      or (requester = other and addressee = auth.uid() and status = 'accepted');
+$$;
+
+revoke all on function public.username_of(jsonb, text) from public, anon, authenticated;
+revoke all on function public.create_profile() from public, anon, authenticated;
+revoke all on function public.relation_with(uuid) from public, anon, authenticated;
+revoke all on function public.heartbeat(text) from public, anon;
+revoke all on function public.go_offline() from public, anon;
+revoke all on function public.my_friends() from public, anon;
+revoke all on function public.friend_requests() from public, anon;
+revoke all on function public.search_players(text) from public, anon;
+revoke all on function public.friend_suggestions() from public, anon;
+revoke all on function public.send_friend_request(uuid) from public, anon;
+revoke all on function public.respond_friend_request(uuid, boolean) from public, anon;
+revoke all on function public.remove_friend(uuid) from public, anon;
+grant execute on function public.heartbeat(text) to authenticated;
+grant execute on function public.go_offline() to authenticated;
+grant execute on function public.my_friends() to authenticated;
+grant execute on function public.friend_requests() to authenticated;
+grant execute on function public.search_players(text) to authenticated;
+grant execute on function public.friend_suggestions() to authenticated;
+grant execute on function public.send_friend_request(uuid) to authenticated;
+grant execute on function public.respond_friend_request(uuid, boolean) to authenticated;
+grant execute on function public.remove_friend(uuid) to authenticated;
+
+
 select 'Nexora-Launcher : base prête. Équipe Nexora-Team : ' || string_agg(email, ', ' order by added_at) as resultat
 from public.team_members;

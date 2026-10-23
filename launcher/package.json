@@ -1,7 +1,7 @@
 {
   "name": "nexora-launcher",
   "productName": "Nexora-Launcher",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Launcher des applis Nexora (comptes et fichiers sur Supabase)",
   "author": "Nexora",
   "license": "MIT",
@@ -23,6 +23,12 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "publish": {
+      "provider": "github",
+      "owner": "Kyxmi",
+      "repo": "Nexora-Launcher",
+      "releaseType": "release"
+    },
     "files": [
       "config.js",
       "main.js",
@@ -43,6 +49,7 @@
     }
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.117.2"
+    "@supabase/supabase-js": "^2.117.2",
+    "electron-updater": "^6.8.9"
   }
 }

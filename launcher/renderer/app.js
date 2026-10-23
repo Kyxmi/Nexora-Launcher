@@ -108,7 +108,7 @@ const state = {
   apps: [],
   loaded: false,
   loadError: '',
-  page: 'library', // shop | shop-app | library | publish | settings
+  page: 'library', // shop | shop-app | library | friends | publish | settings
   selectedId: null,
   shopAppId: null,
   lastStageId: null,
@@ -121,7 +121,25 @@ const state = {
   refreshQueued: false,
   firstLoad: true,
   publish: freshPublish(),
+  friends: freshFriends(),
+  update: { state: 'idle', version: null, percent: 0, error: '' },
 };
+
+function freshFriends() {
+  return {
+    list: [],
+    requests: [],
+    loaded: false,
+    error: '',
+    tab: 'friends', // friends | requests | add
+    filter: '',
+    query: '',
+    results: null,
+    searching: false,
+    suggestions: null,
+    busy: new Set(), // userIds avec une action en cours
+  };
+}
 
 const findApp = (id) => state.apps.find((a) => a.id === id);
 const libraryApps = () => state.apps.filter((a) => a.owned || a.installed);
@@ -173,6 +191,7 @@ function showAuth(message = '') {
   state.lastStageId = null;
   state.firstLoad = true;
   state.publish = freshPublish();
+  state.friends = freshFriends();
   state.progress.clear();
   state.pending.clear();
   showView('auth');
@@ -294,6 +313,7 @@ function enterShell(user, offline) {
   renderAccount();
   renderAll();
   refreshApps();
+  refreshFriends();
 }
 
 function renderAccount() {
@@ -311,6 +331,12 @@ function setCurrent(el, on) {
 function renderNav() {
   setCurrent($('#nav-shop'), state.page === 'shop' || state.page === 'shop-app');
   setCurrent($('#nav-library'), state.page === 'library');
+  setCurrent($('#nav-friends'), state.page === 'friends');
+  const f = state.friends;
+  const incoming = f.requests.filter((r) => r.direction === 'incoming').length;
+  const online = f.list.filter((friend) => friend.online).length;
+  $('#friends-count').textContent = incoming ? String(incoming) : '';
+  $('#friends-online').textContent = online ? `${online} en ligne` : '';
   const publishButton = $('#nav-publish');
   publishButton.hidden = !state.user?.isAdmin;
   setCurrent(publishButton, state.page === 'publish');
@@ -471,6 +497,7 @@ function renderMain() {
   let page;
   if (state.page === 'publish' && state.user?.isAdmin) page = publishPage();
   else if (state.page === 'settings') page = settingsPage();
+  else if (state.page === 'friends') page = friendsPage();
   else if (state.page === 'shop') page = shopPage();
   else if (state.page === 'shop-app') page = shopAppPage(findApp(state.shopAppId));
   else {
@@ -1197,6 +1224,401 @@ async function deleteApp(id) {
   }
 }
 
+/* ---------- Amis ---------- */
+
+function timeAgo(iso) {
+  const date = new Date(iso);
+  if (!iso || Number.isNaN(date.getTime())) return '';
+  const minutes = Math.round((Date.now() - date.getTime()) / 60_000);
+  if (minutes < 2) return 'à l’instant';
+  if (minutes < 60) return `il y a ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `il y a ${hours} h`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return days === 1 ? 'hier' : `il y a ${days} jours`;
+  return `le ${formatDate(iso)}`;
+}
+
+function friendStatus(friend) {
+  if (friend.online && friend.playing) return { text: `Joue à ${friend.playing}`, online: true };
+  if (friend.online) return { text: 'En ligne', online: true };
+  return { text: friend.lastSeen ? `Hors ligne, vu ${timeAgo(friend.lastSeen)}` : 'Hors ligne', online: false };
+}
+
+async function refreshFriends() {
+  if (!state.user || state.offline) return;
+  const f = state.friends;
+  f.lastLoad = Date.now();
+  try {
+    const { friends, requests } = await nx.friendsOverview();
+    if (!state.user || f !== state.friends) return;
+    f.list = friends;
+    f.requests = requests;
+    f.error = '';
+  } catch (err) {
+    f.error = err.message;
+  }
+  f.loaded = true;
+  renderNav();
+  renderFriendsBody();
+}
+
+// Ne redessine que les listes : la recherche en cours n'est pas interrompue.
+function renderFriendsBody() {
+  if (state.page !== 'friends') return;
+  const tabs = $('#friends-tabs');
+  if (tabs) tabs.replaceWith(friendsTabs());
+  const f = state.friends;
+  if (f.tab === 'add' && $('#player-search')) {
+    $('#search-results')?.replaceChildren(searchResults() || '');
+    $('#suggestions')?.replaceChildren(suggestionsList());
+    return;
+  }
+  if (f.tab === 'friends' && $('#friends-lists')) {
+    $('#friends-lists').replaceChildren(...friendsLists());
+    return;
+  }
+  $('#friends-body')?.replaceChildren(friendsBody());
+}
+
+function setFriendsTab(tab) {
+  state.friends.tab = tab;
+  $('#friends-body')?.replaceChildren(friendsBody());
+  $('#friends-tabs')?.replaceWith(friendsTabs());
+  if (tab === 'add') {
+    loadSuggestions();
+    setTimeout(() => $('#player-search')?.focus(), 30);
+  }
+}
+
+function friendsTabs() {
+  const f = state.friends;
+  const incoming = f.requests.filter((r) => r.direction === 'incoming').length;
+  const tab = (id, label, count) => h('button', {
+    class: 'tab',
+    type: 'button',
+    role: 'tab',
+    'aria-selected': String(f.tab === id),
+    onclick: () => setFriendsTab(id),
+  }, label, count ? h('span', { class: 'tab__count' }, String(count)) : null);
+  return h('div', { class: 'tabs friends-tabs', id: 'friends-tabs', role: 'tablist', 'aria-label': 'Amis' },
+    tab('friends', 'Mes amis', f.list.length),
+    tab('requests', 'Demandes', incoming),
+    tab('add', 'Ajouter des amis'));
+}
+
+function friendsPage() {
+  if (state.offline) {
+    return h('section', { class: 'page' },
+      h('h1', { class: 'page__title' }, 'Amis'),
+      emptyCard('Amis indisponibles hors ligne', 'Reconnecte-toi à Internet pour voir tes amis et leurs demandes.', [retryButton()]));
+  }
+  if (state.friends.tab === 'add' && !state.friends.suggestions) loadSuggestions();
+  return h('section', { class: 'page page--friends' },
+    h('h1', { class: 'page__title' }, 'Amis'),
+    h('p', { class: 'page__intro' }, 'Ajoute tes potes pour voir quand ils sont en ligne et à quoi ils jouent. Seuls tes amis voient ton statut.'),
+    friendsTabs(),
+    h('div', { id: 'friends-body' }, friendsBody()));
+}
+
+function friendsBody() {
+  const f = state.friends;
+  if (f.tab === 'add') return addTab();
+  if (!f.loaded) return h('p', { class: 'muted' }, 'Chargement de tes amis…');
+  if (f.error && !f.list.length && !f.requests.length) {
+    return emptyCard('Impossible d’afficher tes amis', f.error, [h('button', { class: 'btn btn--primary btn--tall', type: 'button', onclick: () => refreshFriends() }, 'Réessayer')]);
+  }
+  if (f.tab === 'requests') return requestsTab();
+  return friendsTab();
+}
+
+function personRow(person, { status, online, statusClass = '', actions = [] }) {
+  return h('li', { class: 'person' },
+    h('span', { class: 'person__avatar' },
+      h('span', { class: 'avatar', 'aria-hidden': 'true' }, initial(person.username)),
+      online === undefined ? null : h('span', { class: `presence${online ? ' is-online' : ''}`, 'aria-hidden': 'true' })),
+    h('span', { class: 'person__text' },
+      h('span', { class: 'person__name' }, person.username),
+      status ? h('span', { class: `person__status ${statusClass}` }, status) : null),
+    h('span', { class: 'person__actions' }, actions));
+}
+
+function friendsTab() {
+  const f = state.friends;
+  if (!f.list.length) {
+    return emptyCard('Pas encore d’amis', 'Cherche tes potes par leur pseudo, ou pioche dans les suggestions.', [
+      h('button', { class: 'btn btn--primary btn--tall', type: 'button', onclick: () => setFriendsTab('add') }, 'Ajouter des amis'),
+    ]);
+  }
+  const filterInput = h('input', { id: 'friends-filter', type: 'search', placeholder: 'Chercher parmi tes amis', 'aria-label': 'Chercher parmi tes amis', spellcheck: 'false' });
+  filterInput.value = f.filter;
+  filterInput.addEventListener('input', () => {
+    f.filter = filterInput.value;
+    $('#friends-lists').replaceChildren(...friendsLists());
+  });
+  return h('div', { class: 'friends' },
+    h('label', { class: 'search search--page' }, icon('search'), filterInput),
+    h('div', { id: 'friends-lists' }, friendsLists()));
+}
+
+function friendsLists() {
+  const f = state.friends;
+  const query = f.filter.trim().toLowerCase();
+  const list = f.list.filter((friend) => !query || friend.username.toLowerCase().includes(query));
+  if (!list.length) return [h('p', { class: 'muted' }, 'Aucun ami ne correspond.')];
+  const row = (friend) => {
+    const status = friendStatus(friend);
+    return personRow(friend, {
+      status: status.text,
+      online: status.online,
+      statusClass: status.online ? 'is-online' : '',
+      actions: [h('button', { class: 'link-btn link-btn--muted', type: 'button', disabled: f.busy.has(friend.id), onclick: () => removeFriend(friend) }, 'Retirer')],
+    });
+  };
+  const online = list.filter((friend) => friend.online);
+  const offline = list.filter((friend) => !friend.online);
+  return [
+    online.length ? h('h2', { class: 'section-title section-title--small' }, `En ligne, ${online.length}`) : null,
+    online.length ? h('ul', { class: 'people glass' }, online.map(row)) : null,
+    offline.length ? h('h2', { class: 'section-title section-title--small' }, `Hors ligne, ${offline.length}`) : null,
+    offline.length ? h('ul', { class: 'people glass' }, offline.map(row)) : null,
+  ].filter(Boolean);
+}
+
+function requestsTab() {
+  const f = state.friends;
+  const incoming = f.requests.filter((r) => r.direction === 'incoming');
+  const outgoing = f.requests.filter((r) => r.direction === 'outgoing');
+  if (!incoming.length && !outgoing.length) {
+    return emptyCard('Aucune demande en attente', 'Les demandes d’ami que tu reçois et celles que tu envoies apparaissent ici.', [
+      h('button', { class: 'btn btn--primary btn--tall', type: 'button', onclick: () => setFriendsTab('add') }, 'Ajouter des amis'),
+    ]);
+  }
+  const busy = (r) => f.busy.has(r.id);
+  return h('div', { class: 'friends' },
+    incoming.length ? h('h2', { class: 'section-title section-title--small' }, `Reçues, ${incoming.length}`) : null,
+    incoming.length ? h('ul', { class: 'people glass' }, incoming.map((r) => personRow(r, {
+      status: `Demande reçue ${timeAgo(r.createdAt)}`,
+      actions: [
+        h('button', { class: 'btn btn--primary btn--small', type: 'button', disabled: busy(r), onclick: () => respondRequest(r, true) }, 'Accepter'),
+        h('button', { class: 'btn btn--small', type: 'button', disabled: busy(r), onclick: () => respondRequest(r, false) }, 'Refuser'),
+      ],
+    }))) : null,
+    outgoing.length ? h('h2', { class: 'section-title section-title--small' }, `Envoyées, ${outgoing.length}`) : null,
+    outgoing.length ? h('ul', { class: 'people glass' }, outgoing.map((r) => personRow(r, {
+      status: `Envoyée ${timeAgo(r.createdAt)}, en attente`,
+      actions: [h('button', { class: 'btn btn--small', type: 'button', disabled: busy(r), onclick: () => cancelRequest(r) }, 'Annuler')],
+    }))) : null);
+}
+
+// Le bouton qui correspond au lien avec ce joueur.
+function relationAction(player) {
+  const busy = state.friends.busy.has(player.id);
+  if (player.relation === 'friend') return h('span', { class: 'person__tag' }, 'Ami');
+  if (player.relation === 'outgoing') return h('span', { class: 'person__tag' }, 'Demande envoyée');
+  const label = player.relation === 'incoming' ? 'Accepter sa demande' : 'Ajouter';
+  return h('button', { class: 'btn btn--primary btn--small', type: 'button', disabled: busy, onclick: () => addFriend(player) }, label);
+}
+
+let searchTimer = null;
+
+function addTab() {
+  const f = state.friends;
+  const input = h('input', { id: 'player-search', type: 'search', placeholder: 'Pseudo du joueur', 'aria-label': 'Chercher un joueur par son pseudo', spellcheck: 'false', maxlength: 40 });
+  input.value = f.query;
+  input.addEventListener('input', () => {
+    f.query = input.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(runSearch, 300);
+  });
+  return h('div', { class: 'friends' },
+    h('label', { class: 'search search--page' }, icon('search'), input),
+    h('div', { id: 'search-results' }, searchResults()),
+    h('h2', { class: 'section-title section-title--small' }, 'Suggestions'),
+    h('div', { id: 'suggestions' }, suggestionsList()));
+}
+
+function searchResults() {
+  const f = state.friends;
+  const query = f.query.trim();
+  if (query.length < 2) return h('p', { class: 'muted' }, 'Tape au moins 2 lettres du pseudo de ton pote.');
+  if (!f.results) return h('p', { class: 'muted' }, 'Recherche…');
+  if (!f.results.length) return h('p', { class: 'muted' }, `Aucun joueur ne s’appelle « ${query} ».`);
+  return h('ul', { class: 'people glass' }, f.results.map((player) => personRow(player, { actions: [relationAction(player)] })));
+}
+
+function suggestionsList() {
+  const f = state.friends;
+  if (!f.suggestions) return h('p', { class: 'muted' }, 'Chargement des suggestions…');
+  const list = f.suggestions.filter((player) => player.relation === 'none' || player.justChanged);
+  if (!list.length) return h('p', { class: 'muted' }, 'Pas de suggestion pour l’instant.');
+  return h('ul', { class: 'people glass' }, list.map((player) => personRow(player, {
+    status: player.mutual ? (player.mutual === 1 ? '1 ami en commun' : `${player.mutual} amis en commun`) : 'Membre de Nexora',
+    actions: [relationAction(player)],
+  })));
+}
+
+async function runSearch() {
+  const f = state.friends;
+  const query = f.query.trim();
+  f.results = null;
+  if (query.length >= 2) {
+    $('#search-results')?.replaceChildren(searchResults());
+    try {
+      const results = await nx.searchPlayers(query);
+      if (f.query.trim() !== query) return; // le joueur a continué à taper
+      f.results = results;
+    } catch (err) {
+      f.results = [];
+      toast(err.message, 'error');
+    }
+  }
+  $('#search-results')?.replaceChildren(searchResults());
+}
+
+async function loadSuggestions() {
+  try {
+    state.friends.suggestions = await nx.friendSuggestions();
+  } catch (err) {
+    state.friends.suggestions = [];
+    toast(err.message, 'error');
+  }
+  $('#suggestions')?.replaceChildren(suggestionsList());
+}
+
+// Met à jour le lien avec ce joueur dans la recherche et les suggestions.
+function setRelation(userId, relation) {
+  const f = state.friends;
+  for (const player of [...(f.results || []), ...(f.suggestions || [])]) {
+    if (player.id === userId) {
+      player.relation = relation;
+      player.justChanged = true; // reste affiché dans les suggestions avec son nouveau statut
+    }
+  }
+}
+
+async function friendAction(userId, task) {
+  const f = state.friends;
+  f.busy.add(userId);
+  renderFriendsBody();
+  try {
+    await task();
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    f.busy.delete(userId);
+    await refreshFriends();
+  }
+}
+
+function addFriend(player) {
+  return friendAction(player.id, async () => {
+    const relation = await nx.sendFriendRequest(player.id);
+    setRelation(player.id, relation);
+    toast(relation === 'friend' ? `${player.username} et toi êtes maintenant amis` : `Demande envoyée à ${player.username}`);
+  });
+}
+
+function respondRequest(request, accept) {
+  return friendAction(request.id, async () => {
+    await nx.respondFriendRequest(request.id, accept);
+    setRelation(request.id, accept ? 'friend' : 'none');
+    toast(accept ? `${request.username} et toi êtes maintenant amis` : 'Demande refusée');
+  });
+}
+
+function cancelRequest(request) {
+  return friendAction(request.id, async () => {
+    await nx.removeFriend(request.id);
+    setRelation(request.id, 'none');
+    toast('Demande annulée');
+  });
+}
+
+async function removeFriend(friend) {
+  const ok = await confirmDialog({
+    title: `Retirer ${friend.username} ?`,
+    body: 'Vous ne verrez plus quand l’autre est en ligne. Tu pourras lui renvoyer une demande plus tard.',
+    confirm: 'Retirer',
+    danger: true,
+  });
+  if (!ok) return;
+  await friendAction(friend.id, async () => {
+    await nx.removeFriend(friend.id);
+    setRelation(friend.id, 'none');
+    toast(`${friend.username} retiré de tes amis`);
+  });
+}
+
+/* ---------- Mises à jour du launcher ---------- */
+
+function updateText(u) {
+  switch (u.state) {
+    case 'dev': return 'Mises à jour automatiques désactivées en mode développement (npm start).';
+    case 'checking': return 'Recherche d’une nouvelle version…';
+    case 'latest': return 'Tu as la dernière version.';
+    case 'downloading': return `Téléchargement de la version ${u.version} : ${u.percent} %`;
+    case 'ready': return `La version ${u.version} est prête. Redémarre le launcher pour l’installer.`;
+    case 'error': return u.error;
+    default: return 'Le launcher cherche les nouvelles versions au démarrage, puis toutes les 4 heures.';
+  }
+}
+
+function onUpdateState(u) {
+  state.update = u;
+  renderUpdateCard();
+  const line = $('#update-line');
+  if (line) {
+    line.textContent = updateText(u);
+    line.classList.toggle('is-error', u.state === 'error');
+  }
+  const actions = $('#update-actions');
+  if (actions) actions.replaceChildren(...updateButtons());
+}
+
+function updateButtons() {
+  const u = state.update;
+  if (u.state === 'ready') return [h('button', { class: 'btn btn--primary', type: 'button', onclick: installUpdate }, 'Redémarrer et mettre à jour')];
+  if (u.state === 'dev') return [];
+  return [h('button', {
+    class: 'btn',
+    type: 'button',
+    disabled: u.state === 'checking' || u.state === 'downloading',
+    onclick: () => nx.checkUpdate().then(onUpdateState).catch((err) => toast(err.message, 'error')),
+  }, 'Rechercher une mise à jour')];
+}
+
+// La carte en bas du menu : visible seulement quand une nouvelle version arrive.
+function renderUpdateCard() {
+  const card = $('#update-card');
+  const u = state.update;
+  if (u.state !== 'downloading' && u.state !== 'ready') {
+    card.hidden = true;
+    card.replaceChildren();
+    return;
+  }
+  const bar = h('div', { class: 'progress__bar' });
+  bar.style.width = `${u.state === 'ready' ? 100 : u.percent}%`;
+  card.replaceChildren(
+    h('strong', { class: 'update-card__title' }, u.state === 'ready' ? `Version ${u.version} prête` : `Version ${u.version} en route`),
+    u.state === 'ready'
+      ? h('button', { class: 'btn btn--primary btn--small', type: 'button', onclick: installUpdate }, 'Redémarrer pour mettre à jour')
+      : h('div', { class: 'progress__track', role: 'progressbar', 'aria-label': 'Téléchargement de la mise à jour', 'aria-valuenow': u.percent }, bar));
+  card.hidden = false;
+}
+
+async function installUpdate() {
+  if (state.progress.size || state.pending.size) {
+    toast('Attends la fin des installations en cours avant de redémarrer.', 'error');
+    return;
+  }
+  try {
+    await nx.installUpdate();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
 /* ---------- Paramètres ---------- */
 
 function settingsPage() {
@@ -1204,6 +1626,13 @@ function settingsPage() {
   return h('section', { class: 'page' },
     h('h1', { class: 'page__title' }, 'Paramètres'),
     h('div', { class: 'settings' },
+      h('section', { class: 'settings__group glass' },
+        h('h2', { class: 'section-title' }, 'Mises à jour'),
+        h('div', { class: 'settings__row' },
+          h('div', { class: 'account-card' },
+            h('span', { class: 'account-card__name' }, `Nexora-Launcher ${state.config.version}`),
+            h('span', { class: `update-line${state.update.state === 'error' ? ' is-error' : ''}`, id: 'update-line' }, updateText(state.update))),
+          h('span', { class: 'update-actions', id: 'update-actions' }, updateButtons()))),
       h('section', { class: 'settings__group glass' },
         h('h2', { class: 'section-title' }, 'Serveur'),
         h('p', { class: 'muted' }, 'Les comptes, la boutique et les fichiers sont hébergés sur Supabase.'),
@@ -1233,6 +1662,10 @@ function wire() {
 
   $('#nav-shop').addEventListener('click', () => navigate('shop'));
   $('#nav-library').addEventListener('click', () => navigate('library'));
+  $('#nav-friends').addEventListener('click', () => {
+    navigate('friends');
+    refreshFriends();
+  });
   $('#nav-publish').addEventListener('click', () => navigate(state.page === 'publish' ? 'library' : 'publish'));
   $('#nav-settings').addEventListener('click', () => navigate(state.page === 'settings' ? 'library' : 'settings'));
   $('#search').addEventListener('input', (event) => {
@@ -1247,12 +1680,18 @@ function wire() {
 
   window.addEventListener('focus', () => {
     if (state.user && Date.now() - state.lastRefresh > 30_000) refreshApps({ quiet: true });
+    if (state.user) refreshFriends();
   });
+  // Les amis qui se connectent ou lancent un jeu : plus souvent quand la page Amis est ouverte.
+  setInterval(() => {
+    if (state.user && (state.page === 'friends' || Date.now() - (state.friends.lastLoad || 0) > 60_000)) refreshFriends();
+  }, 20_000);
 
   nx.onDownloadProgress(onDownloadProgress);
   nx.onInstallPhase(onInstallPhase);
   nx.onUploadProgress(onUploadProgress);
   nx.onAppExited(onAppExited);
+  nx.onUpdateState(onUpdateState);
   nx.onSessionExpired(() => {
     if (state.user) showAuth('Ta session a expiré. Reconnecte-toi.');
   });
@@ -1261,6 +1700,7 @@ function wire() {
 async function boot() {
   wire();
   state.config = await nx.getConfig();
+  nx.getUpdate().then(onUpdateState).catch(() => {});
   if (!state.config.configured) {
     showAuth(state.config.configError);
     $('#login-submit').disabled = true;

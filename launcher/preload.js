@@ -35,6 +35,17 @@ contextBridge.exposeInMainWorld('nexora', {
   openAppFolder: (appId) => call('apps:openFolder', appId),
   openAppsFolder: () => call('apps:openRoot'),
 
+  friendsOverview: () => call('friends:overview'),
+  searchPlayers: (query) => call('friends:search', query),
+  friendSuggestions: () => call('friends:suggestions'),
+  sendFriendRequest: (userId) => call('friends:request', userId),
+  respondFriendRequest: (userId, accept) => call('friends:respond', userId, accept),
+  removeFriend: (userId) => call('friends:remove', userId),
+
+  getUpdate: () => call('update:get'),
+  checkUpdate: () => call('update:check'),
+  installUpdate: () => call('update:install'),
+
   pickFile: (kind) => call('admin:pickFile', kind),
   publishApp: (data) => call('admin:publish', data),
   deleteApp: (appId) => call('admin:delete', appId),
@@ -44,4 +55,5 @@ contextBridge.exposeInMainWorld('nexora', {
   onUploadProgress: (callback) => listen('upload:progress', callback),
   onAppExited: (callback) => listen('apps:exited', callback),
   onSessionExpired: (callback) => listen('auth:expired', callback),
+  onUpdateState: (callback) => listen('update:state', callback),
 });

@@ -1,18 +1,24 @@
-# Construit l'installateur Windows et l'attache à une Release GitHub
-# dès qu'un tag de version est poussé (ex. : git tag v1.0.1 && git push origin v1.0.1).
+# Publie automatiquement une release GitHub avec l'installateur Windows.
+#
+# À chaque push sur « main », le workflow lit la version dans launcher/package.json.
+# Si cette version n'a pas encore de release (tag v1.0.1, v1.0.2…), il construit l'installateur
+# et la crée : les launchers déjà installés la reçoivent tout seuls (electron-updater).
+# Si la version existe déjà, il ne fait rien : change donc le numéro dans package.json pour publier.
 name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
+    paths:
+      - 'launcher/**'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-windows:
+  release:
     runs-on: windows-latest
     defaults:
       run:
@@ -20,27 +26,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Lire la version
+        id: version
+        shell: bash
+        run: echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cette version est-elle déjà publiée ?
+        id: exists
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" > /dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "La release ${{ steps.version.outputs.tag }} existe déjà : rien à faire."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-node@v4
+        if: steps.exists.outputs.published == 'false'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: launcher/package-lock.json
 
-      - run: npm ci
+      - if: steps.exists.outputs.published == 'false'
+        run: npm ci
 
       - name: Construire l'installateur
+        if: steps.exists.outputs.published == 'false'
         run: npx electron-builder --win nsis --publish never
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Nexora-Launcher-Setup
-          path: launcher/dist/*.exe
-
       - name: Publier la Release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.exists.outputs.published == 'false'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          # latest.yml : c'est ce fichier que le launcher lit pour savoir qu'une nouvelle version existe.
           files: |
             launcher/dist/*.exe
             launcher/dist/*.exe.blockmap
+            launcher/dist/latest.yml
           generate_release_notes: true

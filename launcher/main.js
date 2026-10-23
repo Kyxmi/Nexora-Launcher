@@ -19,6 +19,7 @@ const api = require('./lib/api');
 const Store = require('./lib/store');
 const windows = require('./lib/windows');
 const { createCloud } = require('./lib/cloud');
+const { autoUpdater } = require('electron-updater');
 
 const APP_ID_RE = /^[a-z0-9-]{1,64}$/;
 const EXE_NAME_RE = /^[\w.\- ()]{1,100}\.exe$/i;
@@ -38,6 +39,9 @@ const downloads = new Map(); // appId -> AbortController, pendant le télécharg
 const busy = new Set(); // appIds en cours d'installation ou de désinstallation
 const running = new Map(); // appId -> processus lancé
 const pickedFiles = new Map(); // chemin choisi dans la fenêtre « Ouvrir » -> 'exe' | 'icon'
+const HEARTBEAT_MS = 60 * 1000; // « en ligne » expire après 2 minutes sans signal (voir schema.sql)
+const USER_ID_RE = /^[0-9a-f-]{36}$/i;
+let quitting = false;
 
 /* ---------- Démarrage ---------- */
 
@@ -50,8 +54,13 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow.focus();
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
     for (const controller of downloads.values()) controller.abort();
+    // On prévient Supabase que le joueur passe hors ligne, sans bloquer la fermeture plus d'1,5 s.
+    if (quitting || !auth.user || !cloud) return;
+    event.preventDefault();
+    quitting = true;
+    Promise.race([cloud.goOffline().catch(() => {}), sleep(1500)]).finally(() => app.quit());
   });
   app.on('web-contents-created', (_event, contents) => {
     contents.setWindowOpenHandler(() => ({ action: 'deny' }));
@@ -79,6 +88,8 @@ function init() {
   electronSession.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   registerIpc();
   createWindow();
+  setInterval(sendHeartbeat, HEARTBEAT_MS);
+  setupUpdater();
 }
 
 function createWindow() {
@@ -224,7 +235,80 @@ function decryptText(buffer) {
 function setUser(user) {
   auth.user = user;
   store.setConfig({ lastUser: user });
+  sendHeartbeat();
   return user;
+}
+
+/* ---------- Mises à jour du launcher (Releases GitHub) ---------- */
+
+// Le launcher lit latest.yml sur la dernière release GitHub (voir « publish » dans package.json),
+// télécharge la nouvelle version en arrière-plan, puis l'installe au redémarrage.
+const UPDATE_CHECK_MS = 4 * 60 * 60 * 1000;
+// idle | dev | checking | latest | downloading | ready | error
+const update = { state: 'idle', version: null, percent: 0, error: '' };
+
+function setUpdate(patch) {
+  Object.assign(update, patch);
+  send('update:state', { ...update });
+}
+
+function updateErrorMessage(err) {
+  const text = String(err?.message || err || '');
+  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|ECONNRESET|net::ERR_/i.test(text)) return 'Impossible de vérifier les mises à jour : vérifie ta connexion Internet.';
+  return 'La vérification des mises à jour a échoué. Réessaie plus tard.';
+}
+
+function setupUpdater() {
+  if (!app.isPackaged) {
+    update.state = 'dev'; // « npm start » : pas de mise à jour automatique
+    return;
+  }
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.logger = null;
+  autoUpdater.on('checking-for-update', () => setUpdate({ state: 'checking', error: '' }));
+  autoUpdater.on('update-available', (info) => setUpdate({ state: 'downloading', version: info.version, percent: 0 }));
+  autoUpdater.on('update-not-available', () => setUpdate({ state: 'latest' }));
+  autoUpdater.on('download-progress', (progress) => setUpdate({ state: 'downloading', percent: Math.floor(progress.percent || 0) }));
+  autoUpdater.on('update-downloaded', (info) => setUpdate({ state: 'ready', version: info.version, percent: 100 }));
+  autoUpdater.on('error', (err) => {
+    if (update.state === 'ready') return;
+    // Release sans latest.yml (publiée avant ce système) : rien à installer.
+    if (/latest\.yml|\b404\b/i.test(String(err?.message || ''))) return setUpdate({ state: 'latest' });
+    setUpdate({ state: 'error', error: updateErrorMessage(err) });
+  });
+  checkForUpdates();
+  setInterval(checkForUpdates, UPDATE_CHECK_MS);
+}
+
+function checkForUpdates() {
+  if (!app.isPackaged || ['checking', 'downloading', 'ready'].includes(update.state)) return;
+  autoUpdater.checkForUpdates().catch(() => {}); // l'erreur arrive aussi par l'événement « error »
+}
+
+async function installUpdate() {
+  if (update.state !== 'ready') throw new api.ApiError('Aucune mise à jour prête à installer.');
+  if (downloads.size || busy.size) throw new api.ApiError('Attends la fin des installations en cours avant de redémarrer.');
+  quitting = true;
+  if (auth.user && cloud) await Promise.race([cloud.goOffline().catch(() => {}), sleep(1500)]);
+  autoUpdater.quitAndInstall(false, true); // installation visible, puis relance du launcher
+  return true;
+}
+
+/* ---------- Présence : « en ligne » pour ses amis ---------- */
+
+// Le nom de l'appli lancée depuis le launcher, montré aux amis (« Joue à … »).
+function playingName() {
+  for (const appId of running.keys()) {
+    const name = store.installed[appId]?.name;
+    if (name) return name;
+  }
+  return null;
+}
+
+function sendHeartbeat() {
+  if (!auth.user || !cloud || quitting) return;
+  cloud.heartbeat(playingName()).catch(() => {}); // hors ligne ou session expirée : on réessaiera
 }
 
 function setOwned(ids) {
@@ -488,10 +572,12 @@ async function launchApp(appId) {
   }
 
   running.set(appId, child);
+  sendHeartbeat(); // les amis voient tout de suite « Joue à … »
   child.on('error', () => {});
   child.once('exit', () => {
     running.delete(appId);
     send('apps:exited', { appId });
+    sendHeartbeat();
   });
   child.unref();
   return true;
@@ -672,6 +758,7 @@ function registerIpc() {
   });
 
   handle('auth:logout', async () => {
+    if (cloud && auth.user) await Promise.race([cloud.goOffline().catch(() => {}), sleep(1500)]);
     if (cloud) await cloud.signOut();
     auth.user = null;
     store.setConfig({ lastUser: null, ownedIds: [] });
@@ -736,6 +823,47 @@ function registerIpc() {
     if (error) throw new api.ApiError(`Impossible d’ouvrir le dossier : ${error}`);
     return true;
   });
+
+  // Amis
+  const friendsCall = async (fn) => {
+    requireCloud();
+    if (!auth.user) throw new api.ApiError('Connecte-toi pour continuer.', 401);
+    try {
+      return await fn(cloud);
+    } catch (err) {
+      await onAuthFailure(err);
+      throw err;
+    }
+  };
+  const assertUserId = (userId) => {
+    if (typeof userId !== 'string' || !USER_ID_RE.test(userId)) throw new api.ApiError('Joueur inconnu.');
+  };
+
+  handle('friends:overview', () => friendsCall(async (c) => {
+    const [friends, requests] = await Promise.all([c.friends(), c.friendRequests()]);
+    return { friends, requests };
+  }));
+  handle('friends:search', (query) => friendsCall((c) => c.searchPlayers(String(query ?? '').trim().slice(0, 40))));
+  handle('friends:suggestions', () => friendsCall((c) => c.friendSuggestions()));
+  handle('friends:request', (userId) => {
+    assertUserId(userId);
+    return friendsCall((c) => c.sendFriendRequest(userId));
+  });
+  handle('friends:respond', (userId, accept) => {
+    assertUserId(userId);
+    return friendsCall((c) => c.respondFriendRequest(userId, accept === true));
+  });
+  handle('friends:remove', (userId) => {
+    assertUserId(userId);
+    return friendsCall((c) => c.removeFriend(userId));
+  });
+
+  handle('update:get', () => ({ ...update }));
+  handle('update:check', () => {
+    checkForUpdates();
+    return { ...update };
+  });
+  handle('update:install', installUpdate);
 
   handle('admin:pickFile', pickFile);
   handle('admin:publish', publishApp);

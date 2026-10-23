@@ -71,17 +71,20 @@ L'installateur n'est pas signé, donc Windows SmartScreen peut afficher un avert
 
 ## Publier une nouvelle version sur GitHub
 
-Le dépôt contient un workflow GitHub Actions (`.github/workflows/release.yml`) qui construit l'installateur Windows et l'attache automatiquement à une **Release**.
+La publication est automatique : un workflow GitHub Actions (`.github/workflows/release.yml`) construit l'installateur Windows et crée la **Release** dès que tu envoies une nouvelle version sur `main`.
 
-1. Change `"version"` dans `launcher/package.json` (par exemple `1.0.1`).
-2. Crée et pousse le tag correspondant :
+1. Change `"version"` dans `launcher/package.json` (par exemple `1.0.2`).
+2. Commite et envoie sur GitHub :
 
    ```bash
-   git tag v1.0.1
-   git push origin v1.0.1
+   git add -A
+   git commit -m "Version 1.0.2"
+   git push
    ```
 
-3. Quelques minutes plus tard, `Nexora-Launcher-Setup-1.0.1.exe` est téléchargeable dans l'onglet **Releases** du dépôt.
+3. Quelques minutes plus tard, `Nexora-Launcher-Setup-1.0.2.exe` est dans l'onglet **Releases**. Si le numéro de version n'a pas changé, rien n'est publié.
+
+Les launchers déjà installés se mettent à jour tout seuls : ils cherchent une nouvelle version au démarrage, puis toutes les 4 heures, la téléchargent en arrière-plan et proposent de redémarrer.
 
 ## Ajouter ton pote à Nexora-Team
 
@@ -125,7 +128,6 @@ L'offre Pro lève ces limites, jusqu'à 500 Go par fichier. Augmente alors `maxU
 
 - Il n'y a pas de « mot de passe oublié » dans le launcher, car il faudrait un service d'e-mail. En attendant, tu peux gérer les comptes depuis **Authentication**, **Users**.
 - La détection de l'appli installée par un installateur n'a pas pu être testée sur un vrai Windows. Si **Lancer** n'ouvre pas la bonne appli, utilise le lien « Indique son .exe » sous les boutons de la fiche.
-- Le launcher ne se met pas à jour tout seul. Pour une nouvelle version du launcher, redistribue l'installateur.
 
 ## Licence
 

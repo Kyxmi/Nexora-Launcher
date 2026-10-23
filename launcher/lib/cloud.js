@@ -193,6 +193,12 @@ function createCloud({ url, key, sessionFile, encrypt, decrypt, onSignedOut }) {
     return data.session.access_token;
   }
 
+  async function rpc(name, args) {
+    const { data, error, status } = await supabase.rpc(name, args);
+    if (error) throw dbError(error, status);
+    return data;
+  }
+
   async function isAdmin() {
     const { data, error, status } = await supabase.rpc('is_admin');
     if (error) throw dbError(error, status);
@@ -312,6 +318,55 @@ function createCloud({ url, key, sessionFile, encrypt, decrypt, onSignedOut }) {
     async removeFromLibrary(appId) {
       const { error, status } = await supabase.from('library').delete().eq('app_id', appId);
       if (error) throw dbError(error, status);
+    },
+
+    // Les amis : tout passe par les fonctions de supabase/schema.sql (partie 6),
+    // qui ne renvoient que ce que le compte connecté a le droit de voir.
+    async heartbeat(playing) {
+      await rpc('heartbeat', { p_playing: playing || null });
+    },
+
+    async goOffline() {
+      await rpc('go_offline');
+    },
+
+    async friends() {
+      const rows = await rpc('my_friends');
+      return (rows || []).map((row) => ({
+        id: row.id,
+        username: row.username,
+        online: Boolean(row.online),
+        playing: row.playing || null,
+        lastSeen: row.last_seen || null,
+        since: row.since || null,
+      }));
+    },
+
+    async friendRequests() {
+      const rows = await rpc('friend_requests');
+      return (rows || []).map((row) => ({ id: row.id, username: row.username, direction: row.direction, createdAt: row.created_at }));
+    },
+
+    async searchPlayers(query) {
+      const rows = await rpc('search_players', { q: query });
+      return (rows || []).map((row) => ({ id: row.id, username: row.username, relation: row.relation }));
+    },
+
+    async friendSuggestions() {
+      const rows = await rpc('friend_suggestions');
+      return (rows || []).map((row) => ({ id: row.id, username: row.username, mutual: row.mutual || 0, relation: 'none' }));
+    },
+
+    async sendFriendRequest(userId) {
+      return rpc('send_friend_request', { target: userId });
+    },
+
+    async respondFriendRequest(userId, accept) {
+      await rpc('respond_friend_request', { other: userId, accept: Boolean(accept) });
+    },
+
+    async removeFriend(userId) {
+      await rpc('remove_friend', { other: userId });
     },
 
     async downloadApp(app, dest, { signal, onProgress } = {}) {
