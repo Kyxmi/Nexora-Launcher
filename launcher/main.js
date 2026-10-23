@@ -20,6 +20,7 @@ const Store = require('./lib/store');
 const windows = require('./lib/windows');
 const { createCloud } = require('./lib/cloud');
 const { autoUpdater } = require('electron-updater');
+const github = require('./lib/github');
 
 const APP_ID_RE = /^[a-z0-9-]{1,64}$/;
 const EXE_NAME_RE = /^[\w.\- ()]{1,100}\.exe$/i;
@@ -41,6 +42,7 @@ const running = new Map(); // appId -> processus lancé
 const pickedFiles = new Map(); // chemin choisi dans la fenêtre « Ouvrir » -> 'exe' | 'icon'
 const HEARTBEAT_MS = 60 * 1000; // « en ligne » expire après 2 minutes sans signal (voir schema.sql)
 const USER_ID_RE = /^[0-9a-f-]{36}$/i;
+const APP_UPDATE_CHECK_MS = 30 * 60 * 1000; // applis GitHub : on regarde s'il y a une nouvelle release toutes les 30 minutes
 let quitting = false;
 
 /* ---------- Démarrage ---------- */
@@ -71,7 +73,7 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 function init() {
-  store = new Store(app.getPath('userData'), { lastUser: null, ownedIds: [] });
+  store = new Store(app.getPath('userData'), { lastUser: null, ownedIds: [], autoUpdateApps: true });
   appsDir = path.join(app.getPath('userData'), 'apps');
   configError = checkConfig();
   if (!configError) {
@@ -90,6 +92,8 @@ function init() {
   createWindow();
   setInterval(sendHeartbeat, HEARTBEAT_MS);
   setupUpdater();
+  setInterval(checkAppUpdates, APP_UPDATE_CHECK_MS);
+  setTimeout(checkAppUpdates, 15000); // peu après le démarrage, une fois la session rétablie
 }
 
 function createWindow() {
@@ -352,6 +356,14 @@ function localState(appId, local) {
   };
 }
 
+// Une nouvelle version existe-t-elle ? Par l'empreinte du fichier, ou par le numéro de version
+// quand GitHub ne donne pas d'empreinte (très anciennes releases).
+function hasUpdate(local, remote) {
+  if (remote.packageType === 'installer' && (local.packageType || 'app') !== 'installer') return true;
+  if (remote.sha256) return local.sha256 !== remote.sha256;
+  return Boolean(remote.githubRepo) && remote.version !== local.version;
+}
+
 // remoteApps = la boutique (null hors ligne) ; ownedIds = la bibliothèque du compte.
 async function mergeApps(remoteApps, ownedIds) {
   const owned = new Set(ownedIds || []);
@@ -368,6 +380,7 @@ async function mergeApps(remoteApps, ownedIds) {
       description: remote.description,
       publisher: remote.publisher,
       packageType: remote.packageType,
+      githubRepo: remote.githubRepo || null,
       version: remote.version,
       fileSize: remote.fileSize,
       updatedAt: remote.updatedAt,
@@ -377,8 +390,7 @@ async function mergeApps(remoteApps, ownedIds) {
       owned: owned.has(remote.id) || Boolean(local),
       // Une appli installée comme « autonome » alors qu'elle est devenue « installateur » doit être réinstallée :
       // sinon Lancer rouvrirait l'installateur au lieu de l'appli.
-      updateAvailable: Boolean(local) && (local.sha256 !== remote.sha256
-        || (remote.packageType === 'installer' && (local.packageType || 'app') !== 'installer')),
+      updateAvailable: Boolean(local) && hasUpdate(local, remote),
       ...localState(remote.id, local),
     });
   }
@@ -406,9 +418,43 @@ async function mergeApps(remoteApps, ownedIds) {
   return list;
 }
 
+/* ---------- Mises à jour automatiques des applis (GitHub) ---------- */
+
+const autoTried = new Set(); // « appId:version » déjà tentés : pas de boucle si une mise à jour échoue
+
+// Installe, sans clic, les nouvelles versions des applis suivies sur GitHub, quand elles ne sont pas ouvertes.
+function autoUpdateApps(apps) {
+  if (!store.config.autoUpdateApps || !auth.user || !cloud) return;
+  for (const item of apps) {
+    if (!item.githubRepo || !item.installed || !item.updateAvailable || !item.remote) continue;
+    if (running.has(item.id) || downloads.has(item.id) || busy.has(item.id)) continue;
+    const key = `${item.id}:${item.version}`;
+    if (autoTried.has(key)) continue;
+    autoTried.add(key);
+    send('apps:auto-update', { appId: item.id, name: item.name, phase: 'start' });
+    installApp(item.id, { auto: true })
+      .then(() => send('apps:auto-update', { appId: item.id, name: item.name, phase: 'done', version: item.version }))
+      .catch((err) => {
+        autoTried.delete(key); // on réessaiera à la prochaine vérification
+        send('apps:auto-update', { appId: item.id, name: item.name, phase: 'error', error: friendlyError(err) });
+      });
+  }
+}
+
+async function checkAppUpdates() {
+  if (!auth.user || !cloud || quitting) return;
+  try {
+    const rows = await cloud.listApps();
+    const remote = await Promise.all(rows.map((row) => github.withRelease(row)));
+    autoUpdateApps(await mergeApps(remote, store.config.ownedIds));
+  } catch {
+    // Hors ligne ou session expirée : on réessaiera.
+  }
+}
+
 /* ---------- Installer, lancer, désinstaller ---------- */
 
-async function installApp(appId) {
+async function installApp(appId, { auto = false } = {}) {
   assertAppId(appId);
   requireCloud();
   if (downloads.has(appId) || busy.has(appId)) throw new api.ApiError('Une installation est déjà en cours pour cette appli.');
@@ -418,7 +464,11 @@ async function installApp(appId) {
   downloads.set(appId, controller);
   busy.add(appId);
   try {
-    const meta = await cloud.getApp(appId);
+    let meta = await cloud.getApp(appId);
+    if (meta.githubRepo) {
+      meta = await github.withRelease(meta, { force: true });
+      if (!meta.fromGithub && !meta.filePath) throw new api.ApiError('Impossible de joindre GitHub pour récupérer la dernière version. Réessaie dans un instant.');
+    }
     const fileName = path.basename(String(meta.fileName || ''));
     if (!EXE_NAME_RE.test(fileName)) throw new api.ApiError('Nom de fichier refusé par le launcher.');
     const isInstaller = meta.packageType === 'installer';
@@ -472,7 +522,9 @@ async function installApp(appId) {
     // Installateur : on le lance une seule fois, puis on retrouve l'appli qu'il a installée.
     send('install:phase', { appId, phase: 'setup' });
     const before = await windows.listPrograms();
-    const run = await windows.runAndWait(downloaded, '');
+    // Mise à jour automatique : « /S » rend silencieux les installateurs NSIS (ceux de Tauri, par exemple) ;
+    // les autres l'ignorent et affichent leurs fenêtres.
+    const run = await windows.runAndWait(downloaded, auto ? '/S' : '');
     if (run.code === windows.CANCELLED) throw new api.ApiError('Installation annulée.');
 
     let program = null;
@@ -578,6 +630,7 @@ async function launchApp(appId) {
     running.delete(appId);
     send('apps:exited', { appId });
     sendHeartbeat();
+    setTimeout(checkAppUpdates, 3000); // une mise à jour attendait peut-être la fin de la partie
   });
   child.unref();
   return true;
@@ -654,10 +707,18 @@ async function publishApp(input = {}) {
   // Le launcher n'envoie que des fichiers choisis dans la fenêtre « Ouvrir ».
   if (exePath && pickedFiles.get(exePath) !== 'exe') throw new api.ApiError('Choisis le .exe avec le bouton prévu.');
   if (iconPath && pickedFiles.get(iconPath) !== 'icon') throw new api.ApiError('Choisis l’icône avec le bouton prévu.');
-  if (!appId && !exePath) throw new api.ApiError('Choisis le fichier .exe de ton appli.');
+  const githubInput = String(input.githubRepo ?? '').trim();
+  const githubRepo = githubInput ? github.normalizeRepo(githubInput) : null;
+  if (githubInput && !githubRepo) throw new api.ApiError('Dépôt GitHub invalide : écris-le sous la forme proprietaire/depot, ou colle son adresse GitHub.');
+  if (!appId && !exePath && !githubRepo) throw new api.ApiError('Choisis le fichier .exe de ton appli, ou indique son dépôt GitHub.');
 
   const name = String(input.name ?? '').trim();
-  const version = String(input.version ?? '').trim();
+  let version = String(input.version ?? '').trim();
+  if (githubRepo) {
+    const release = await github.latestRelease(githubRepo, { force: true });
+    if (!release && !exePath && !appId) throw new api.ApiError('Ce dépôt GitHub n’a aucune release avec un fichier .exe, ou il est privé.');
+    if (!version && release) version = release.version;
+  }
   const description = String(input.description ?? '').replace(/\r\n?/g, '\n').trim();
   const packageType = input.packageType === 'installer' ? 'installer' : 'app';
   if (!name || name.length > 60) throw new api.ApiError('Le nom doit faire entre 1 et 60 caractères.');
@@ -685,6 +746,7 @@ async function publishApp(input = {}) {
       version,
       description,
       packageType,
+      githubRepo,
       exe,
       icon,
       onProgress: (sent, total) => send('upload:progress', { sent, total }),
@@ -717,7 +779,13 @@ function registerIpc() {
     appsDir,
     version: app.getVersion(),
     maxUploadMb: MAX_UPLOAD_MB,
+    autoUpdateApps: Boolean(store.config.autoUpdateApps),
   }));
+  handle('settings:autoUpdateApps', (value) => {
+    store.setConfig({ autoUpdateApps: value === true });
+    if (value === true) checkAppUpdates();
+    return value === true;
+  });
 
   handle('server:health', () => requireCloud().health());
 
@@ -769,9 +837,12 @@ function registerIpc() {
     requireCloud();
     if (!auth.user) throw new api.ApiError('Connecte-toi pour continuer.', 401);
     try {
-      const [remote, owned] = await Promise.all([cloud.listApps(), cloud.listLibrary()]);
+      const [rows, owned] = await Promise.all([cloud.listApps(), cloud.listLibrary()]);
+      const remote = await Promise.all(rows.map((row) => github.withRelease(row)));
       setOwned(owned);
-      return { offline: false, apps: await mergeApps(remote, owned) };
+      const apps = await mergeApps(remote, owned);
+      autoUpdateApps(apps);
+      return { offline: false, apps };
     } catch (err) {
       if (err.status === 0) return { offline: true, apps: await mergeApps(null, store.config.ownedIds) };
       await onAuthFailure(err);

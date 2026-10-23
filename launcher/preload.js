@@ -18,6 +18,7 @@ function listen(channel, callback) {
 contextBridge.exposeInMainWorld('nexora', {
   getConfig: () => call('config:get'),
   checkServer: () => call('server:health'),
+  setAutoUpdateApps: (value) => call('settings:autoUpdateApps', value),
 
   restoreSession: () => call('auth:restore'),
   login: (email, password) => call('auth:login', { email, password }),
@@ -56,4 +57,5 @@ contextBridge.exposeInMainWorld('nexora', {
   onAppExited: (callback) => listen('apps:exited', callback),
   onSessionExpired: (callback) => listen('auth:expired', callback),
   onUpdateState: (callback) => listen('update:state', callback),
+  onAppAutoUpdate: (callback) => listen('apps:auto-update', callback),
 });

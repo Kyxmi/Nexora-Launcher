@@ -182,7 +182,12 @@ async function uploadFile(base, route, { method = 'POST', headers = {}, filePath
 
 /* ---------- Téléchargement vérifié ---------- */
 
-function download(base, route, { token, headers = {}, dest, expectedSha256, onProgress, signal, timeout = 30000 } = {}) {
+// Hôtes vers lesquels GitHub peut rediriger un téléchargement de release.
+const REDIRECT_HOST = /(^|\.)(github\.com|githubusercontent\.com)$/i;
+const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
+
+// redirects : nombre de redirections acceptées (GitHub renvoie vers objects.githubusercontent.com).
+function download(base, route, { token, headers = {}, dest, expectedSha256, onProgress, signal, timeout = 30000, redirects = 0 } = {}) {
   return new Promise((resolve, reject) => {
     let url;
     try {
@@ -196,6 +201,24 @@ function download(base, route, { token, headers = {}, dest, expectedSha256, onPr
 
     const req = transportFor(url).get(url, { headers: allHeaders, signal, timeout }, async (res) => {
       try {
+        if (redirects > 0 && REDIRECT_CODES.has(res.statusCode) && res.headers.location) {
+          res.resume();
+          let next;
+          try {
+            next = new URL(res.headers.location, url);
+          } catch {
+            throw new ApiError('Redirection invalide du serveur.');
+          }
+          if (next.protocol !== 'https:' || !REDIRECT_HOST.test(next.hostname)) {
+            throw new ApiError('Le serveur a redirigé le téléchargement vers une adresse non autorisée.');
+          }
+          // Pas d'en-tête d'autorisation vers l'hôte suivant.
+          const result = await download(next.origin, next.pathname + next.search, {
+            dest, expectedSha256, onProgress, signal, timeout, redirects: redirects - 1,
+          });
+          resolve(result);
+          return;
+        }
         if (res.statusCode !== 200) {
           await handleResponse(res);
           throw new ApiError(`Réponse inattendue du serveur (${res.statusCode}).`, res.statusCode);

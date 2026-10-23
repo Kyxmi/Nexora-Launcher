@@ -90,7 +90,7 @@ async function withBusy(button, label, task) {
 function freshPublish() {
   return {
     editingId: null,
-    draft: { name: '', version: '', description: '' },
+    draft: { name: '', version: '', description: '', githubRepo: '' },
     packageType: 'app',
     exe: null,
     icon: null,
@@ -826,6 +826,19 @@ function onDownloadProgress({ appId, received, total }) {
   }
 }
 
+// Une appli suivie sur GitHub se met à jour toute seule : le launcher l'installe quand elle n'est pas ouverte.
+function onAppAutoUpdate({ appId, name, phase, version, error }) {
+  if (!state.user) return;
+  if (phase === 'start') {
+    toast(`Mise à jour automatique de ${name}…`);
+    return;
+  }
+  state.progress.delete(appId);
+  if (phase === 'done') toast(`${name} est à jour${version ? `, version ${version}` : ''}`);
+  else toast(`Mise à jour de ${name} impossible : ${error}`, 'error');
+  refreshApps({ quiet: true });
+}
+
 function onInstallPhase({ appId, phase }) {
   state.progress.set(appId, { ...(state.progress.get(appId) || {}), phase });
   rerenderApp(appId);
@@ -956,7 +969,7 @@ function editApp(id) {
     ...freshPublish(),
     editingId: id,
     packageType: app.packageType || 'app',
-    draft: { name: app.name, version: app.version, description: app.description || '' },
+    draft: { name: app.name, version: app.version, description: app.description || '', githubRepo: app.githubRepo || '' },
   };
   navigate('publish');
 }
@@ -988,10 +1001,15 @@ function publishPage() {
   descriptionInput.value = draft.description;
   descriptionInput.addEventListener('input', () => { draft.description = descriptionInput.value; });
 
+  const githubInput = h('input', { class: 'input', id: 'pub-github', maxlength: 200, autocomplete: 'off', spellcheck: 'false', placeholder: 'proprietaire/depot' });
+  githubInput.value = draft.githubRepo || '';
+  githubInput.addEventListener('input', () => { draft.githubRepo = githubInput.value; });
+
   const form = h('form', { class: 'publish-form glass', id: 'publish-form', novalidate: true, onsubmit: onPublishSubmit },
     field('Nom de l’appli', nameInput),
-    field('Version', versionInput, editing ? `Version actuelle : ${editing.version}` : null),
+    field('Version', versionInput, editing ? `Version actuelle : ${editing.version}` : 'Laisse vide pour reprendre la version de la release GitHub.'),
     field('Description', descriptionInput),
+    field('Dépôt GitHub (facultatif)', githubInput, 'Le launcher met l’appli à jour tout seul dès qu’une nouvelle release y est publiée. Exemple : proprietaire/depot, ou colle l’adresse du dépôt.'),
     fileField('exe'),
     typeChoice(),
     fileField('icon'),
@@ -1051,7 +1069,7 @@ function fillFileField(wrap, kind) {
   const file = p[kind];
   const editing = p.editingId ? findApp(p.editingId) : null;
   const isExe = kind === 'exe';
-  const label = isExe ? (editing ? 'Nouveau fichier .exe (facultatif)' : 'Fichier .exe') : 'Icône (facultative)';
+  const label = isExe ? (editing ? 'Nouveau fichier .exe (facultatif)' : 'Fichier .exe (inutile avec un dépôt GitHub)') : 'Icône (facultative)';
   const buttonLabel = isExe
     ? (file ? 'Changer de fichier' : 'Choisir le .exe')
     : (file || editing?.iconUrl ? 'Changer d’image' : 'Choisir une image');
@@ -1142,10 +1160,11 @@ async function onPublishSubmit(event) {
   const name = $('#pub-name').value.trim();
   const version = $('#pub-version').value.trim();
   const description = $('#pub-description').value.trim();
+  const githubRepo = $('#pub-github').value.trim();
 
   if (!name) return showPublishError('Donne un nom à ton appli.');
-  if (!version) return showPublishError('Indique la version, par exemple 1.0.0.');
-  if (!p.editingId && !p.exe) return showPublishError('Choisis le fichier .exe de ton appli.');
+  if (!version && !githubRepo) return showPublishError('Indique la version, par exemple 1.0.0.');
+  if (!p.editingId && !p.exe && !githubRepo) return showPublishError('Choisis le fichier .exe de ton appli, ou indique son dépôt GitHub.');
   const maxMb = state.config.maxUploadMb;
   if (p.exe && maxMb && p.exe.size > maxMb * 1024 * 1024) {
     return showPublishError(`Ce fichier dépasse la limite de ${maxMb} Mo de ton projet Supabase.`);
@@ -1165,6 +1184,7 @@ async function onPublishSubmit(event) {
       version,
       description,
       packageType: p.packageType,
+      githubRepo,
       exePath: p.exe?.path,
       iconPath: p.icon?.path,
     });
@@ -1192,7 +1212,7 @@ function publishedList() {
     appIcon(app, 'pub-item__icon'),
     h('div', { class: 'pub-item__text' },
       h('span', { class: 'pub-item__name' }, app.name),
-      h('span', { class: 'pub-item__meta' }, `Version ${app.version}, ${app.packageType === 'installer' ? 'installateur' : 'appli autonome'}, ${downloadsLabel(app.downloads)}`),
+      h('span', { class: 'pub-item__meta' }, `Version ${app.version}, ${app.packageType === 'installer' ? 'installateur' : 'appli autonome'}, ${downloadsLabel(app.downloads)}${app.githubRepo ? ', suit GitHub' : ''}`),
       h('span', { class: 'pub-item__actions' },
         h('button', { class: 'link-btn', type: 'button', onclick: () => editApp(app.id) }, 'Modifier'),
         h('button', { class: 'link-btn link-btn--danger', type: 'button', onclick: () => deleteApp(app.id) }, 'Supprimer'))))));
@@ -1621,6 +1641,25 @@ async function installUpdate() {
 
 /* ---------- Paramètres ---------- */
 
+function autoUpdateRow() {
+  const input = h('input', { type: 'checkbox', class: 'switch__input', role: 'switch', 'aria-label': 'Mettre à jour mes applis automatiquement' });
+  input.checked = Boolean(state.config.autoUpdateApps);
+  input.addEventListener('change', async () => {
+    try {
+      state.config.autoUpdateApps = await nx.setAutoUpdateApps(input.checked);
+      toast(input.checked ? 'Tes applis se mettront à jour toutes seules' : 'Mises à jour automatiques des applis désactivées');
+    } catch (err) {
+      input.checked = !input.checked;
+      toast(err.message, 'error');
+    }
+  });
+  return h('label', { class: 'settings__row settings__row--toggle' },
+    h('span', { class: 'settings__text' },
+      h('span', { class: 'settings__label' }, 'Mettre à jour mes applis automatiquement'),
+      h('span', { class: 'settings__hint' }, 'Quand une nouvelle version sort sur GitHub, le launcher l’installe sans que tu aies à cliquer, tant que l’appli n’est pas ouverte.')),
+    h('span', { class: 'switch' }, input, h('span', { class: 'switch__track', 'aria-hidden': 'true' })));
+}
+
 function settingsPage() {
   const user = state.user;
   return h('section', { class: 'page' },
@@ -1632,7 +1671,8 @@ function settingsPage() {
           h('div', { class: 'account-card' },
             h('span', { class: 'account-card__name' }, `Nexora-Launcher ${state.config.version}`),
             h('span', { class: `update-line${state.update.state === 'error' ? ' is-error' : ''}`, id: 'update-line' }, updateText(state.update))),
-          h('span', { class: 'update-actions', id: 'update-actions' }, updateButtons()))),
+          h('span', { class: 'update-actions', id: 'update-actions' }, updateButtons())),
+        autoUpdateRow()),
       h('section', { class: 'settings__group glass' },
         h('h2', { class: 'section-title' }, 'Serveur'),
         h('p', { class: 'muted' }, 'Les comptes, la boutique et les fichiers sont hébergés sur Supabase.'),
@@ -1692,6 +1732,7 @@ function wire() {
   nx.onUploadProgress(onUploadProgress);
   nx.onAppExited(onAppExited);
   nx.onUpdateState(onUpdateState);
+  nx.onAppAutoUpdate(onAppAutoUpdate);
   nx.onSessionExpired(() => {
     if (state.user) showAuth('Ta session a expiré. Reconnecte-toi.');
   });

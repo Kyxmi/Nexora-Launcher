@@ -168,10 +168,11 @@ function createCloud({ url, key, sessionFile, encrypt, decrypt, onSignedOut }) {
       publisher: row.publisher || 'Nexora-Team',
       packageType: row.package_type === 'installer' ? 'installer' : 'app',
       version: row.version,
-      fileName: row.file_name,
-      filePath: row.file_path,
+      githubRepo: row.github_repo || null,
+      fileName: row.file_name || null,
+      filePath: row.file_path || null,
       fileSize: Number(row.file_size) || 0,
-      sha256: row.sha256,
+      sha256: row.sha256 || null,
       iconPath: row.icon_path || null,
       iconUrl: row.icon_path ? publicUrl(ICONS_BUCKET, row.icon_path) : null,
       downloads: row.downloads || 0,
@@ -372,6 +373,17 @@ function createCloud({ url, key, sessionFile, encrypt, decrypt, onSignedOut }) {
     },
 
     async downloadApp(app, dest, { signal, onProgress } = {}) {
+      // Appli mise à jour depuis GitHub : le fichier vient de la release (voir lib/github.js).
+      if (app.downloadUrl) {
+        const source = new URL(app.downloadUrl);
+        if (source.protocol !== 'https:' || source.hostname !== 'github.com') throw new ApiError('Adresse de téléchargement refusée.');
+        await api.download(source.origin, source.pathname + source.search, {
+          dest, expectedSha256: app.sha256, signal, onProgress, redirects: 5, timeout: 30000,
+        });
+        supabase.rpc('record_download', { app_id: app.id }).then(() => {}, () => {});
+        return;
+      }
+      if (!app.filePath) throw new ApiError('Cette appli n’a pas de fichier à télécharger : l’admin doit la republier.');
       const token = await accessToken();
       try {
         await api.download(storageUrl, `/object/${APPS_BUCKET}/${encodePath(app.filePath)}`, {
@@ -395,12 +407,12 @@ function createCloud({ url, key, sessionFile, encrypt, decrypt, onSignedOut }) {
     },
 
     // exe : { path, fileName, size, sha256 } — icon : { path, ext, contentType }
-    async publish({ appId, name, version, description, packageType, exe, icon, onProgress }) {
+    async publish({ appId, name, version, description, packageType, githubRepo, exe, icon, onProgress }) {
       const current = appId ? await getApp(appId) : null;
       const id = current ? current.id : crypto.randomUUID();
       const stamp = Date.now().toString(36);
       const uploaded = [];
-      const fields = { name, version, description, package_type: packageType === 'installer' ? 'installer' : 'app' };
+      const fields = { name, version, description, package_type: packageType === 'installer' ? 'installer' : 'app', github_repo: githubRepo || null };
 
       try {
         // Chaque envoi a son propre chemin : on bascule d'un coup sur la nouvelle version,
@@ -425,7 +437,7 @@ function createCloud({ url, key, sessionFile, encrypt, decrypt, onSignedOut }) {
         if (!result.data || !result.data.length) throw new ApiError(ADMIN_ONLY, 403);
 
         if (current) {
-          if (exe && current.filePath !== fields.file_path) await removeObjects(APPS_BUCKET, [current.filePath]);
+          if (exe && current.filePath && current.filePath !== fields.file_path) await removeObjects(APPS_BUCKET, [current.filePath]);
           if (icon && current.iconPath) await removeObjects(ICONS_BUCKET, [current.iconPath]);
         }
         return mapRow(result.data[0]);

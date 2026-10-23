@@ -42,6 +42,20 @@ alter table public.apps add column if not exists package_type text not null defa
 alter table public.apps drop constraint if exists apps_package_type_check;
 alter table public.apps add constraint apps_package_type_check check (package_type in ('app', 'installer'));
 
+-- Dépôt GitHub d'où l'appli se met à jour (« proprio/depot ») : le launcher lit sa dernière release,
+-- et le fichier vient alors de GitHub. Sans fichier envoyé sur Supabase, les colonnes file_* restent vides.
+alter table public.apps add column if not exists github_repo text;
+alter table public.apps drop constraint if exists apps_github_repo_check;
+alter table public.apps add constraint apps_github_repo_check check (github_repo is null or github_repo ~ '^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$');
+alter table public.apps alter column file_name drop not null;
+alter table public.apps alter column file_path drop not null;
+alter table public.apps alter column file_size drop not null;
+alter table public.apps alter column sha256 drop not null;
+alter table public.apps drop constraint if exists apps_file_or_github_check;
+alter table public.apps add constraint apps_file_or_github_check check (
+  github_repo is not null or (file_name is not null and file_path is not null and file_size is not null and sha256 is not null)
+);
+
 create unique index if not exists apps_name_unique on public.apps (lower(name));
 
 -- Peu importe qui, dans l'équipe, publie ou modifie : l'appli est toujours signée Nexora-Team.

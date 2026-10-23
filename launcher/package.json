@@ -1,7 +1,7 @@
 {
   "name": "nexora-launcher",
   "productName": "Nexora-Launcher",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Launcher des applis Nexora (comptes et fichiers sur Supabase)",
   "author": "Nexora",
   "license": "MIT",
