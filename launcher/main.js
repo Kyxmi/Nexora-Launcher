@@ -20,7 +20,7 @@ const Store = require('./lib/store');
 const windows = require('./lib/windows');
 const { createCloud } = require('./lib/cloud');
 const { autoUpdater } = require('electron-updater');
-const github = require('./lib/github');
+const sources = require('./lib/sources');
 const lock = require('./lib/lock');
 
 const APP_ID_RE = /^[a-z0-9-]{1,64}$/;
@@ -364,7 +364,7 @@ function localState(appId, local) {
 function hasUpdate(local, remote) {
   if (remote.packageType === 'installer' && (local.packageType || 'app') !== 'installer') return true;
   if (remote.sha256) return local.sha256 !== remote.sha256;
-  return Boolean(remote.githubRepo) && remote.version !== local.version;
+  return sources.hasSource(remote) && remote.version !== local.version;
 }
 
 // remoteApps = la boutique (null hors ligne) ; ownedIds = la bibliothèque du compte.
@@ -384,6 +384,8 @@ async function mergeApps(remoteApps, ownedIds) {
       publisher: remote.publisher,
       packageType: remote.packageType,
       githubRepo: remote.githubRepo || null,
+      updateUrl: remote.updateUrl || null,
+      forceUpdate: Boolean(remote.forceUpdate),
       version: remote.version,
       fileSize: remote.fileSize,
       updatedAt: remote.updatedAt,
@@ -425,11 +427,13 @@ async function mergeApps(remoteApps, ownedIds) {
 
 const autoTried = new Set(); // « appId:version » déjà tentés : pas de boucle si une mise à jour échoue
 
-// Installe, sans clic, les nouvelles versions des applis suivies sur GitHub, quand elles ne sont pas ouvertes.
+// Installe, sans clic, les nouvelles versions des applis qui ont une source de mises à jour (GitHub ou serveur perso),
+// quand elles ne sont pas ouvertes. Une mise à jour marquée « forcée » par le serveur s'installe même si le réglage est coupé.
 function autoUpdateApps(apps) {
-  if (!store.config.autoUpdateApps || !auth.user || !cloud) return;
+  if (!auth.user || !cloud) return;
   for (const item of apps) {
-    if (!item.githubRepo || !item.installed || !item.updateAvailable || !item.remote) continue;
+    if (!store.config.autoUpdateApps && !item.forceUpdate) continue;
+    if (!sources.hasSource(item) || !item.installed || !item.updateAvailable || !item.remote) continue;
     if (running.has(item.id) || downloads.has(item.id) || busy.has(item.id)) continue;
     const key = `${item.id}:${item.version}`;
     if (autoTried.has(key)) continue;
@@ -448,7 +452,7 @@ async function checkAppUpdates() {
   if (!auth.user || !cloud || quitting) return;
   try {
     const rows = await cloud.listApps();
-    const remote = await Promise.all(rows.map((row) => github.withRelease(row)));
+    const remote = await Promise.all(rows.map((row) => sources.withRelease(row)));
     autoUpdateApps(await mergeApps(remote, store.config.ownedIds));
   } catch {
     // Hors ligne ou session expirée : on réessaiera.
@@ -498,9 +502,9 @@ async function installApp(appId, { auto = false } = {}) {
   busy.add(appId);
   try {
     let meta = await cloud.getApp(appId);
-    if (meta.githubRepo) {
-      meta = await github.withRelease(meta, { force: true });
-      if (!meta.fromGithub && !meta.filePath) throw new api.ApiError('Impossible de joindre GitHub pour récupérer la dernière version. Réessaie dans un instant.');
+    if (sources.hasSource(meta)) {
+      meta = await sources.withRelease(meta, { force: true });
+      if (!meta.fromSource && !meta.filePath) throw new api.ApiError('Impossible de joindre le serveur de mises à jour de cette appli. Réessaie dans un instant.');
     }
     const fileName = path.basename(String(meta.fileName || ''));
     if (!EXE_NAME_RE.test(fileName)) throw new api.ApiError('Nom de fichier refusé par le launcher.');
@@ -756,16 +760,18 @@ async function publishApp(input = {}) {
   // Le launcher n'envoie que des fichiers choisis dans la fenêtre « Ouvrir ».
   if (exePath && pickedFiles.get(exePath) !== 'exe') throw new api.ApiError('Choisis le .exe avec le bouton prévu.');
   if (iconPath && pickedFiles.get(iconPath) !== 'icon') throw new api.ApiError('Choisis l’icône avec le bouton prévu.');
-  const githubInput = String(input.githubRepo ?? '').trim();
-  const githubRepo = githubInput ? github.normalizeRepo(githubInput) : null;
-  if (githubInput && !githubRepo) throw new api.ApiError('Dépôt GitHub invalide : écris-le sous la forme proprietaire/depot, ou colle son adresse GitHub.');
-  if (!appId && !exePath && !githubRepo) throw new api.ApiError('Choisis le fichier .exe de ton appli, ou indique son dépôt GitHub.');
+  const sourceInput = String(input.updateSource ?? '').trim();
+  const source = sourceInput ? sources.parseSource(sourceInput) : null;
+  if (sourceInput && !source) throw new api.ApiError('Source de mises à jour invalide : écris un dépôt GitHub (proprietaire/depot) ou colle l’adresse du serveur de mises à jour.');
+  const githubRepo = source?.githubRepo || null;
+  const updateUrl = source?.updateUrl || null;
+  if (!appId && !exePath && !source) throw new api.ApiError('Choisis le fichier .exe de ton appli, ou indique sa source de mises à jour.');
 
   const name = String(input.name ?? '').trim();
   let version = String(input.version ?? '').trim();
-  if (githubRepo) {
-    const release = await github.latestRelease(githubRepo, { force: true });
-    if (!release && !exePath && !appId) throw new api.ApiError('Ce dépôt GitHub n’a aucune release avec un fichier .exe, ou il est privé.');
+  if (source) {
+    const release = await sources.latestRelease(source, { force: true });
+    if (!release && !exePath && !appId) throw new api.ApiError('Cette source n’a aucune version avec un fichier .exe, ou elle n’est pas joignable.');
     if (!version && release) version = release.version;
   }
   const description = String(input.description ?? '').replace(/\r\n?/g, '\n').trim();
@@ -796,6 +802,7 @@ async function publishApp(input = {}) {
       description,
       packageType,
       githubRepo,
+      updateUrl,
       exe,
       icon,
       onProgress: (sent, total) => send('upload:progress', { sent, total }),
@@ -893,7 +900,7 @@ function registerIpc() {
     if (!auth.user) throw new api.ApiError('Connecte-toi pour continuer.', 401);
     try {
       const [rows, owned] = await Promise.all([cloud.listApps(), cloud.listLibrary()]);
-      const remote = await Promise.all(rows.map((row) => github.withRelease(row)));
+      const remote = await Promise.all(rows.map((row) => sources.withRelease(row)));
       setOwned(owned);
       const apps = await mergeApps(remote, owned);
       autoUpdateApps(apps);

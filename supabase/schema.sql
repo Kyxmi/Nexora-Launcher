@@ -51,9 +51,14 @@ alter table public.apps alter column file_name drop not null;
 alter table public.apps alter column file_path drop not null;
 alter table public.apps alter column file_size drop not null;
 alter table public.apps alter column sha256 drop not null;
+-- Ou un serveur PocketBase perso (adresse de sa collection app_updates) : même principe que GitHub.
+alter table public.apps add column if not exists update_url text;
+alter table public.apps drop constraint if exists apps_update_url_check;
+alter table public.apps add constraint apps_update_url_check check (update_url is null or (update_url ~ '^https?://[^[:space:]]+$' and char_length(update_url) <= 300));
 alter table public.apps drop constraint if exists apps_file_or_github_check;
 alter table public.apps add constraint apps_file_or_github_check check (
-  github_repo is not null or (file_name is not null and file_path is not null and file_size is not null and sha256 is not null)
+  github_repo is not null or update_url is not null
+  or (file_name is not null and file_path is not null and file_size is not null and sha256 is not null)
 );
 
 create unique index if not exists apps_name_unique on public.apps (lower(name));

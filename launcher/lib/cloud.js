@@ -169,6 +169,7 @@ function createCloud({ url, key, sessionFile, encrypt, decrypt, onSignedOut }) {
       packageType: row.package_type === 'installer' ? 'installer' : 'app',
       version: row.version,
       githubRepo: row.github_repo || null,
+      updateUrl: row.update_url || null,
       fileName: row.file_name || null,
       filePath: row.file_path || null,
       fileSize: Number(row.file_size) || 0,
@@ -373,12 +374,16 @@ function createCloud({ url, key, sessionFile, encrypt, decrypt, onSignedOut }) {
     },
 
     async downloadApp(app, dest, { signal, onProgress } = {}) {
-      // Appli mise à jour depuis GitHub : le fichier vient de la release (voir lib/github.js).
+      // Appli mise à jour depuis GitHub ou depuis un serveur perso : le fichier vient de là (voir lib/sources.js).
       if (app.downloadUrl) {
         const source = new URL(app.downloadUrl);
-        if (source.protocol !== 'https:' || source.hostname !== 'github.com') throw new ApiError('Adresse de téléchargement refusée.');
+        // Le fichier doit venir de la source que l'équipe a indiquée pour cette appli, et d'aucune autre.
+        const trusted = app.updateUrl
+          ? source.origin === new URL(app.updateUrl).origin
+          : source.protocol === 'https:' && source.hostname === 'github.com';
+        if (!trusted) throw new ApiError('Adresse de téléchargement refusée.');
         await api.download(source.origin, source.pathname + source.search, {
-          dest, expectedSha256: app.sha256, signal, onProgress, redirects: 5, timeout: 30000,
+          dest, expectedSha256: app.sha256, signal, onProgress, redirects: app.updateUrl ? 0 : 5, timeout: 30000,
         });
         supabase.rpc('record_download', { app_id: app.id }).then(() => {}, () => {});
         return;
@@ -407,12 +412,12 @@ function createCloud({ url, key, sessionFile, encrypt, decrypt, onSignedOut }) {
     },
 
     // exe : { path, fileName, size, sha256 } — icon : { path, ext, contentType }
-    async publish({ appId, name, version, description, packageType, githubRepo, exe, icon, onProgress }) {
+    async publish({ appId, name, version, description, packageType, githubRepo, updateUrl, exe, icon, onProgress }) {
       const current = appId ? await getApp(appId) : null;
       const id = current ? current.id : crypto.randomUUID();
       const stamp = Date.now().toString(36);
       const uploaded = [];
-      const fields = { name, version, description, package_type: packageType === 'installer' ? 'installer' : 'app', github_repo: githubRepo || null };
+      const fields = { name, version, description, package_type: packageType === 'installer' ? 'installer' : 'app', github_repo: githubRepo || null, update_url: updateUrl || null };
 
       try {
         // Chaque envoi a son propre chemin : on bascule d'un coup sur la nouvelle version,

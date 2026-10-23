@@ -90,7 +90,7 @@ async function withBusy(button, label, task) {
 function freshPublish() {
   return {
     editingId: null,
-    draft: { name: '', version: '', description: '', githubRepo: '' },
+    draft: { name: '', version: '', description: '', updateSource: '' },
     packageType: 'app',
     exe: null,
     icon: null,
@@ -969,7 +969,7 @@ function editApp(id) {
     ...freshPublish(),
     editingId: id,
     packageType: app.packageType || 'app',
-    draft: { name: app.name, version: app.version, description: app.description || '', githubRepo: app.githubRepo || '' },
+    draft: { name: app.name, version: app.version, description: app.description || '', updateSource: app.githubRepo || app.updateUrl || '' },
   };
   navigate('publish');
 }
@@ -1001,15 +1001,15 @@ function publishPage() {
   descriptionInput.value = draft.description;
   descriptionInput.addEventListener('input', () => { draft.description = descriptionInput.value; });
 
-  const githubInput = h('input', { class: 'input', id: 'pub-github', maxlength: 200, autocomplete: 'off', spellcheck: 'false', placeholder: 'proprietaire/depot' });
-  githubInput.value = draft.githubRepo || '';
-  githubInput.addEventListener('input', () => { draft.githubRepo = githubInput.value; });
+  const sourceInput = h('input', { class: 'input', id: 'pub-source', maxlength: 300, autocomplete: 'off', spellcheck: 'false', placeholder: 'proprietaire/depot, ou adresse du serveur' });
+  sourceInput.value = draft.updateSource || '';
+  sourceInput.addEventListener('input', () => { draft.updateSource = sourceInput.value; });
 
   const form = h('form', { class: 'publish-form glass', id: 'publish-form', novalidate: true, onsubmit: onPublishSubmit },
     field('Nom de l’appli', nameInput),
-    field('Version', versionInput, editing ? `Version actuelle : ${editing.version}` : 'Laisse vide pour reprendre la version de la release GitHub.'),
+    field('Version', versionInput, editing ? `Version actuelle : ${editing.version}` : 'Laisse vide pour reprendre la version de la source de mises à jour.'),
     field('Description', descriptionInput),
-    field('Dépôt GitHub (facultatif)', githubInput, 'Le launcher met l’appli à jour tout seul dès qu’une nouvelle release y est publiée. Exemple : proprietaire/depot, ou colle l’adresse du dépôt.'),
+    field('Source des mises à jour (facultatif)', sourceInput, 'Le launcher met l’appli à jour tout seul dès qu’une nouvelle version sort. Un dépôt GitHub (proprietaire/depot) ou l’adresse d’un serveur PocketBase (collection app_updates). Pour un serveur perso, préfère une adresse en https://.'),
     fileField('exe'),
     typeChoice(),
     fileField('icon'),
@@ -1069,7 +1069,7 @@ function fillFileField(wrap, kind) {
   const file = p[kind];
   const editing = p.editingId ? findApp(p.editingId) : null;
   const isExe = kind === 'exe';
-  const label = isExe ? (editing ? 'Nouveau fichier .exe (facultatif)' : 'Fichier .exe (inutile avec un dépôt GitHub)') : 'Icône (facultative)';
+  const label = isExe ? (editing ? 'Nouveau fichier .exe (facultatif)' : 'Fichier .exe (inutile avec une source de mises à jour)') : 'Icône (facultative)';
   const buttonLabel = isExe
     ? (file ? 'Changer de fichier' : 'Choisir le .exe')
     : (file || editing?.iconUrl ? 'Changer d’image' : 'Choisir une image');
@@ -1160,11 +1160,11 @@ async function onPublishSubmit(event) {
   const name = $('#pub-name').value.trim();
   const version = $('#pub-version').value.trim();
   const description = $('#pub-description').value.trim();
-  const githubRepo = $('#pub-github').value.trim();
+  const updateSource = $('#pub-source').value.trim();
 
   if (!name) return showPublishError('Donne un nom à ton appli.');
-  if (!version && !githubRepo) return showPublishError('Indique la version, par exemple 1.0.0.');
-  if (!p.editingId && !p.exe && !githubRepo) return showPublishError('Choisis le fichier .exe de ton appli, ou indique son dépôt GitHub.');
+  if (!version && !updateSource) return showPublishError('Indique la version, par exemple 1.0.0.');
+  if (!p.editingId && !p.exe && !updateSource) return showPublishError('Choisis le fichier .exe de ton appli, ou indique sa source de mises à jour.');
   const maxMb = state.config.maxUploadMb;
   if (p.exe && maxMb && p.exe.size > maxMb * 1024 * 1024) {
     return showPublishError(`Ce fichier dépasse la limite de ${maxMb} Mo de ton projet Supabase.`);
@@ -1184,7 +1184,7 @@ async function onPublishSubmit(event) {
       version,
       description,
       packageType: p.packageType,
-      githubRepo,
+      updateSource,
       exePath: p.exe?.path,
       iconPath: p.icon?.path,
     });
@@ -1212,7 +1212,7 @@ function publishedList() {
     appIcon(app, 'pub-item__icon'),
     h('div', { class: 'pub-item__text' },
       h('span', { class: 'pub-item__name' }, app.name),
-      h('span', { class: 'pub-item__meta' }, `Version ${app.version}, ${app.packageType === 'installer' ? 'installateur' : 'appli autonome'}, ${downloadsLabel(app.downloads)}${app.githubRepo ? ', suit GitHub' : ''}`),
+      h('span', { class: 'pub-item__meta' }, `Version ${app.version}, ${app.packageType === 'installer' ? 'installateur' : 'appli autonome'}, ${downloadsLabel(app.downloads)}${app.githubRepo ? ', suit GitHub' : app.updateUrl ? ', suit un serveur' : ''}`),
       h('span', { class: 'pub-item__actions' },
         h('button', { class: 'link-btn', type: 'button', onclick: () => editApp(app.id) }, 'Modifier'),
         h('button', { class: 'link-btn link-btn--danger', type: 'button', onclick: () => deleteApp(app.id) }, 'Supprimer'))))));
@@ -1678,7 +1678,7 @@ function autoUpdateRow() {
   return h('label', { class: 'settings__row settings__row--toggle' },
     h('span', { class: 'settings__text' },
       h('span', { class: 'settings__label' }, 'Mettre à jour mes applis automatiquement'),
-      h('span', { class: 'settings__hint' }, 'Quand une nouvelle version sort sur GitHub, le launcher l’installe sans que tu aies à cliquer, tant que l’appli n’est pas ouverte.')),
+      h('span', { class: 'settings__hint' }, 'Quand une nouvelle version sort (GitHub ou serveur de l’équipe), le launcher l’installe sans que tu aies à cliquer, tant que l’appli n’est pas ouverte.')),
     h('span', { class: 'switch' }, input, h('span', { class: 'switch__track', 'aria-hidden': 'true' })));
 }
 
