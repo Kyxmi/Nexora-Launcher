@@ -295,7 +295,7 @@ async function installUpdate() {
   if (downloads.size || busy.size) throw new api.ApiError('Attends la fin des installations en cours avant de redémarrer.');
   quitting = true;
   if (auth.user && cloud) await Promise.race([cloud.goOffline().catch(() => {}), sleep(1500)]);
-  autoUpdater.quitAndInstall(false, true); // installation visible, puis relance du launcher
+  autoUpdater.quitAndInstall(true, true); // installation silencieuse, puis relance du launcher
   return true;
 }
 
@@ -613,7 +613,9 @@ async function launchApp(appId) {
     }
   }
 
-  const child = spawn(exePath, [], { cwd: path.dirname(exePath), detached: true, stdio: 'ignore' });
+  // NEXORA_LAUNCHER=1 : les applis réservées au launcher refusent de s'ouvrir sans ce signal (voir README).
+  const env = { ...process.env, NEXORA_LAUNCHER: '1', NEXORA_LAUNCHER_VERSION: app.getVersion() };
+  const child = spawn(exePath, [], { cwd: path.dirname(exePath), detached: true, stdio: 'ignore', env });
   try {
     await new Promise((resolve, reject) => {
       child.once('spawn', resolve);

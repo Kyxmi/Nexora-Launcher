@@ -1,7 +1,7 @@
 {
   "name": "nexora-launcher",
   "productName": "Nexora-Launcher",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Launcher des applis Nexora (comptes et fichiers sur Supabase)",
   "author": "Nexora",
   "license": "MIT",
@@ -42,9 +42,9 @@
       "icon": "build/icon.ico"
     },
     "nsis": {
-      "oneClick": false,
+      "oneClick": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
+      "runAfterFinish": true,
       "shortcutName": "Nexora-Launcher"
     }
   },
