@@ -1,7 +1,7 @@
 {
   "name": "nexora-launcher",
   "productName": "Nexora-Launcher",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Launcher des applis Nexora (comptes et fichiers sur Supabase)",
   "author": "Nexora",
   "license": "MIT",
@@ -56,6 +56,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "resedit": "^2.0.3"
   }
 }
