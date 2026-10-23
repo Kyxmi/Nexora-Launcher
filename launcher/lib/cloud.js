@@ -262,7 +262,9 @@ function createCloud({ url, key, sessionFile, encrypt, decrypt, onSignedOut }) {
         return null;
       }
       if (!data.session) return null;
-      return toUser(data.session.user, await isAdmin());
+      // Les infos du compte gardées sur le PC peuvent être périmées (pseudo changé depuis) : on les redemande.
+      const fresh = await supabase.auth.getUser().catch(() => null);
+      return toUser(fresh?.data?.user || data.session.user, await isAdmin());
     },
 
     async signIn(email, password) {
